@@ -21,19 +21,28 @@ from langchain.chains import create_retrieval_chain
 from langchain.memory import ConversationBufferMemory
 import weaviate as weaviate_client
 
+import weaviate as weaviate_client
+from langchain_community.vectorstores import Weaviate as WeaviateStore
+
+# Load environment variables
 load_dotenv()
-# API keys are now loaded from .env file
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
-os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
-os.environ["COHERE_API_KEY"] = COHERE_API_KEY
+WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://127.0.0.1:8080")
+WEAVIATE_INDEX_NAME = os.getenv("WEAVIATE_INDEX_NAME", "RAGDocs")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+
+if ANTHROPIC_API_KEY:
+    os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
+if COHERE_API_KEY:
+    os.environ["COHERE_API_KEY"] = COHERE_API_KEY
 
 app = FastAPI(title="RAG API Documentation Assistant", version="1.0.0")
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your React app URL
+    allow_origins=["*"],  # In production, set the React app's origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,6 +94,14 @@ last_updated = None
 # Memory management
 conversation_memories: Dict[str, ConversationBufferMemory] = {}
 
+def sanitize_index_name(name: str) -> str:
+    s = re.sub(r'[^0-9a-zA-Z]', '_', name).strip('_')
+    if not s:
+        s = "RAGDocs"
+    if not s[0].isalpha():
+        s = "RAG_" + s
+    return s[0].upper() + s[1:]
+
 def get_object_size_mb(obj):
     """Calculate the size of an object in MB."""
     size = sys.getsizeof(obj)
@@ -100,8 +117,10 @@ def get_memory_size_mb():
         # Estimate memory size based on chat history
         chat_history = memory.chat_memory.messages
         for message in chat_history:
-            total_size += len(message.content.encode('utf-8'))
-            total_size += len(message.type.encode('utf-8'))
+            if hasattr(message, "content"):
+                total_size += len(message.content.encode('utf-8'))
+            if hasattr(message, "type"):
+                total_size += len(str(message.type).encode('utf-8'))
     return total_size / (1024 * 1024)
 
 def get_memory_for_session(session_id: str) -> ConversationBufferMemory:
@@ -135,18 +154,27 @@ def parse_structured_response(answer: str) -> Dict[str, Any]:
     in_list = False
     
     for line in lines:
+        raw_line = line
         line = line.strip()
         if not line:
+            # preserve blank separation for lists/code handling
+            if in_list:
+                in_list = False
+                if current_list:
+                    structured_content['lists'].append(current_list)
+                    current_list = []
             continue
             
         # Detect headers
         if line.startswith('## '):
             structured_content['title'] = line.replace('## ', '')
+            continue
         elif line.startswith('### '):
             current_section = line.replace('### ', '')
+            continue
             
         # Detect code blocks
-        elif line.startswith('```'):
+        if line.startswith('```'):
             if not in_code_block:
                 in_code_block = True
                 code_language = line.replace('```', '').strip() or 'bash'
@@ -160,14 +188,16 @@ def parse_structured_response(answer: str) -> Dict[str, Any]:
                         'title': current_section or 'Code'
                     })
                 current_code = ''
-        elif in_code_block:
-            current_code += line + '\n'
+            continue
+        if in_code_block:
+            current_code += raw_line + '\n'
+            continue
             
         # Detect tables
-        elif '|' in line and '---' in line:
+        if '|' in line and '---' in line:
             # This is a table separator, skip
             continue
-        elif '|' in line:
+        if '|' in line:
             # This is a table row
             cells = [cell.strip() for cell in line.split('|') if cell.strip()]
             if len(cells) > 1:
@@ -178,47 +208,56 @@ def parse_structured_response(answer: str) -> Dict[str, Any]:
                     })
                 else:
                     structured_content['tables'][-1]['rows'].append(cells)
+                continue
                     
         # Detect lists
-        elif line.startswith('- ') or line.startswith('* '):
+        if line.startswith('- ') or line.startswith('* '):
             if not in_list:
                 in_list = True
                 current_list = []
             current_list.append(line[2:])
-        elif line.startswith('1. ') or line.startswith('2. ') or line.startswith('3. '):
+            continue
+        if line[:3].isdigit() and line[3:4] == '.':
             if not in_list:
                 in_list = True
                 current_list = []
-            current_list.append(line[3:])
-        elif in_list and (line.startswith('- ') or line.startswith('* ') or line.startswith('1. ') or line.startswith('2. ')):
-            # Continue list
+            # remove the leading "N. "
+            idx = line.find('.')
+            current_list.append(line[idx+1:].strip())
+            continue
+        if in_list and (line.startswith('- ') or line.startswith('* ') or (line[:3].isdigit() and line[3:4]=='.')):
+            # continue list (redundant but safe)
             if line.startswith('- ') or line.startswith('* '):
                 current_list.append(line[2:])
             else:
-                current_list.append(line[3:])
-        elif in_list:
+                idx = line.find('.')
+                current_list.append(line[idx+1:].strip())
+            continue
+        if in_list:
             # End of list
             in_list = False
             if current_list:
                 structured_content['lists'].append(current_list)
                 current_list = []
-                
+        
         # Detect notes and warnings
-        elif 'note:' in line.lower() or 'important:' in line.lower():
+        if 'note:' in line.lower() or 'important:' in line.lower():
             structured_content['notes'].append(line)
-        elif 'warning:' in line.lower() or 'caution:' in line.lower():
+            continue
+        if 'warning:' in line.lower() or 'caution:' in line.lower():
             structured_content['warnings'].append(line)
+            continue
             
         # Detect links
-        elif 'http' in line and ('api' in line.lower() or 'endpoint' in line.lower()):
+        if 'http' in line and ('api' in line.lower() or 'endpoint' in line.lower()):
             structured_content['links'].append(line)
+            continue
             
         # Everything else goes to description
-        elif not in_code_block and not in_list:
-            if structured_content['description']:
-                structured_content['description'] += '\n' + line
-            else:
-                structured_content['description'] = line
+        if structured_content['description']:
+            structured_content['description'] += '\n' + line
+        else:
+            structured_content['description'] = line
     
     # Handle any remaining list
     if in_list and current_list:
@@ -228,90 +267,104 @@ def parse_structured_response(answer: str) -> Dict[str, Any]:
 
 def determine_response_type(structured_content: Dict[str, Any]) -> str:
     """Determine the type of response based on content."""
-    if structured_content['code_blocks'] and not structured_content['description']:
+    code_blocks = structured_content.get('code_blocks', [])
+    tables = structured_content.get('tables', [])
+    lists = structured_content.get('lists', [])
+    description = structured_content.get('description', '')
+
+    if code_blocks and not description:
         return 'code'
-    elif structured_content['tables'] and not structured_content['code_blocks']:
+    elif tables and not code_blocks:
         return 'table'
-    elif structured_content['lists'] and not structured_content['code_blocks']:
+    elif lists and not code_blocks:
         return 'list'
-    elif structured_content['code_blocks'] and structured_content['description']:
+    elif code_blocks and description:
         return 'api'
-    elif len(structured_content['description']) > 100:
+    elif len(description) > 100:
         return 'explanatory'
     else:
         return 'simple'
 
+# --- Core processing: process_documentation (Weaviate integration) ---
 def process_documentation(content: str, title: str = "API Documentation") -> dict:
-    """Process the documentation content and create the RAG system."""
     global vector_store, rag_chain, retriever, documents_count, db_size_mb, last_updated
-    
-    # Strip YAML front matter if present
+    global weaviate_client_instance, weaviate_index_name
+
+    # Strip yaml front matter
     raw = re.sub(r"^---\n.*?\n---\n", "", content, flags=re.DOTALL)
-    
-    # Split by headings so sections stay intact
-    headers_to_split_on = [
-        ("#", "h1"),
-        ("##", "h2"),
-        ("###", "h3"),
-        ("####", "h4"),
-    ]
+
+    # Split using Markdown headers
+    headers_to_split_on = [("#","h1"),("##","h2"),("###","h3"),("####","h4")]
     md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
     docs = md_splitter.split_text(raw)
-    
-    # Add metadata
+
     for d in docs:
         d.metadata.setdefault("source", title)
-    
-    # Then do chunking with overlap for embeddings/RAG
+
+    # Chunk documents
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks: List[Document] = splitter.split_documents(docs)
-    
-    # Create embeddings and vector store
+
+    # Embeddings
     embeddings = CohereEmbeddings(model="embed-english-v3.0")
-    # Use the correct v4 Weaviate client initialization
-    import weaviate as weaviate_client
-    client = weaviate_client.Client(url="http://127.0.0.1:8080")
-    vector_store = Weaviate.from_documents(
-        chunks,
-        embeddings,
+
+    # Sanitize and set index/class name
+    index_name = sanitize_index_name(title)
+
+    # Initialize explicit Weaviate client (recommended, fixes URL/auth errors)
+    client = weaviate_client.Client(url=WEAVIATE_URL)
+
+    # Store weaviate client & index globally so clear/status can use them
+    weaviate_client_instance = client
+    weaviate_index_name = index_name
+
+    # Initialize LangChain Weaviate store with the client
+    vector_store = WeaviateStore(
         client=client,
-        by_text=False,
-        index_name="RAGDocs"
+        index_name=index_name,
+        text_key="page_content",
+        attributes=["source", "title"],
+        embedding=embeddings
     )
-    
-    # Estimate db size (Weaviate doesn't provide direct size, so use chunk count)
-    db_size_mb = len(chunks) * 6.5 / 1024  # Rough estimate: 6.5KB per vector
-    
-    # Use MMR to reduce redundancy
+
+    # Add documents (this will embed via CohereEmbeddings and push to Weaviate)
+    vector_store.add_documents(chunks)
+
+    # Estimate db size / docs count
+    documents_count = len(chunks)
+    content_size = sum(len(c.page_content.encode('utf-8')) for c in chunks)
+    metadata_size = sum(len(str(c.metadata).encode('utf-8')) for c in chunks)
+    approx_vector_bytes = len(chunks) * 1536 * 4 if len(chunks) > 0 else 0
+    total_size_bytes = approx_vector_bytes + content_size + metadata_size + (1024 * 1024)
+    db_size_mb = total_size_bytes / (1024 * 1024)
+
+    # Create retriever (same MMR config you used)
     retriever = vector_store.as_retriever(
         search_type="mmr",
-        search_kwargs={"k": 6, "fetch_k": 24, "lambda_mult": 0.3},
+        search_kwargs={"k": 6, "fetch_k": 24, "lambda_mult": 0.3}
     )
-    
-    # Create LLM and chain
-    llm = ChatAnthropic(
-        model="claude-3-5-sonnet-20240620",
-        temperature=0.2,
-        max_tokens=600,
-    )
+
+    # Build LLM + chain (use cheaper default model; configurable via ANTHROPIC_MODEL)
+    llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0.2, max_tokens=600)
+
     
     SYSTEM_PROMPT = """
 You are an expert technical assistant. Always respond in a structured JSON format, using key-value pairs for each type of information. Your response must be valid JSON and include only the following top-level keys as needed:
 
-{{
+{
     "type": "simple|code|api|table|list|explanatory|error|warning|values|links|short_answer",
     "title": "string (if applicable)",
     "description": "string (main explanation or answer)",
-    "code_blocks": [ {{ "language": "string", "code": "string", "title": "string" }} ],
-    "tables": [ {{ "headers": ["string"], "rows": [["string"]] }} ],
+    "code_blocks": [ { "language": "string", "code": "string", "title": "string" } ],
+    "tables": [ { "headers": ["string"], "rows": [["string"]] } ],
     "lists": [ ["string"] ],
     "links": [ "string (URL)" ],
     "notes": [ "string" ],
     "warnings": [ "string" ],
     "errors": [ "string" ],
-    "values": {{ "key": "value", ... }},
+    "values": { "key": "value", ... },
     "short_answer": "string (if a brief answer is appropriate)"
-}}
+}
 
 Guidelines:
 - If the user requests an explanation, set "type": "explanatory" and provide a detailed answer in "description".
@@ -326,8 +379,10 @@ Guidelines:
 - Do not include any extra text outside the JSON object.
 - Do not use markdown formatting, only valid JSON.
 - If you do not know the answer, reply with:
-    {{ "type": "error", "errors": ["I don't know based on the provided context."] }}
+    { "type": "error", "errors": ["I don't know based on the provided context."] }
 """
+    # Escape braces to prevent template variable parsing inside example JSON
+    SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{", "{{").replace("}", "}}")
     
     HUMAN_PROMPT = """CONTEXT:
 {context}
@@ -346,12 +401,26 @@ Answer:"""
     ])
     
     doc_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
-    rag_chain = create_retrieval_chain(retriever, doc_chain)
-    
-    # Update global counters
-    documents_count = len(chunks)
-    last_updated = "now"
-    
+
+    # --- FIX: Map retriever output to 'context' key expected by the prompt ---
+    from langchain.schema.runnable import RunnableLambda
+    def _map_inputs_for_chain(x: Dict[str, Any]) -> Dict[str, Any]:
+        user_input = x.get("input", "")
+        try:
+            docs = retriever.invoke(user_input)
+        except Exception as retrieval_error:
+            print(f"DEBUG: retriever.invoke error: {retrieval_error}")
+            docs = []
+        return {
+            "context": docs,
+            "input": user_input,
+            "chat_history": x.get("chat_history", "")
+        }
+    retriever_chain = RunnableLambda(_map_inputs_for_chain)
+    rag_chain = retriever_chain | doc_chain
+
+    last_updated = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())
+
     return {
         "sections": len(docs),
         "chunks": len(chunks),
@@ -360,15 +429,22 @@ Answer:"""
     }
 
 def clear_vector_database():
-    """Clear the vector database and reset the RAG system."""
-    global vector_store, rag_chain, retriever, documents_count, db_size_mb, last_updated
+    """Clear the vector database and reset the RAG system (delete Weaviate class)."""
+    global vector_store, rag_chain, retriever, documents_count, db_size_mb, last_updated, weaviate_index_name
     if vector_store is not None:
-        import weaviate as weaviate_client
-        client = weaviate_client.Client(url="http://127.0.0.1:8080")
         try:
-            client.schema.delete_class("RAGDocs")
+            client = weaviate_client.Client(url=WEAVIATE_URL)
         except Exception:
-            pass
+            try:
+                client = weaviate_client.WeaviateClient(url=WEAVIATE_URL)
+            except Exception:
+                client = None
+        if client is not None:
+            try:
+                class_to_delete = weaviate_index_name if 'weaviate_index_name' in globals() and weaviate_index_name else WEAVIATE_INDEX_NAME
+                client.schema.delete_class(class_to_delete)
+            except Exception:
+                pass
     vector_store = None
     rag_chain = None
     retriever = None
@@ -381,8 +457,9 @@ def clear_conversation_memory(session_id: Optional[str] = None):
     global conversation_memories
     if session_id is None:
         # Clear all sessions
+        cleared = len(conversation_memories)
         conversation_memories.clear()
-        return {"message": "All conversation memories cleared", "cleared_sessions": len(conversation_memories)}
+        return {"message": "All conversation memories cleared", "cleared_sessions": cleared}
     elif session_id in conversation_memories:
         # Clear specific session
         del conversation_memories[session_id]
@@ -412,30 +489,77 @@ async def ask_question(request: QuestionRequest):
             "type": "error",
             "errors": ["No documentation has been processed yet. Please upload documentation first."]
         }
+    
     try:
         # Get memory for this session
         memory = get_memory_for_session(request.session_id)
         
-        # Get chat history
+        # Get chat history (last 10 messages)
         chat_history = memory.chat_memory.messages
+        print(f"DEBUG: chat_history: {chat_history}=================")
         
-        # Create context with chat history
+        # Prepare context
         context_with_history = {
             "input": request.question,
-            "chat_history": "\n".join([f"{msg.type}: {msg.content}" for msg in chat_history[-10:]])  # Last 10 messages
+            "chat_history": "\n".join([f"{msg.type}: {msg.content}" for msg in chat_history[-10:]])
         }
         
-        result = rag_chain.invoke(context_with_history)
-        answer = result.get("answer")
-        if answer is None:
-            raise ValueError(f"RAG chain did not return an 'answer' key. Got: {result}")
+        print("DEBUG: About to invoke rag_chain...")
+        try:
+            result = rag_chain.invoke(context_with_history)
+            print(f"DEBUG: rag_chain.invoke returned: {result}=================")
+        except Exception as e:
+            print(f"DEBUG: Exception during rag_chain.invoke: {e}")
+            raise
         
-        # Save the conversation to memory
+        # Robust answer extraction
+        answer = None
+        if isinstance(result, dict):
+            # Try all common keys
+            for key in ["output", "answer", "text", "result", "response"]:
+                if key in result and isinstance(result[key], str):
+                    answer = result[key]
+                    break
+            if answer is None:
+                # Fallback: get first string value in dict
+                for v in result.values():
+                    if isinstance(v, str):
+                        answer = v
+                        break
+            if answer is None:
+                answer = str(result)
+        else:
+            answer = str(result)
+        
+        print(f"DEBUG: answer: {answer}=================")
+        
+        # Save conversation in memory
         memory.chat_memory.add_user_message(request.question)
         memory.chat_memory.add_ai_message(answer)
         
-        # Parse and structure the response
-        structured_content = parse_structured_response(answer)
+        # Post-process answer
+        def post_process_answer(answer: str) -> str:
+            answer = re.sub(r'([^\n])(##)', r'\1\n\n\2', answer)
+            answer = re.sub(r'([^\n])(###)', r'\1\n\n\2', answer)
+            answer = re.sub(r'([^\n])(- )', r'\1\n\n\2', answer)
+            answer = re.sub(r'([^\n])(\d+\.)', r'\1\n\n\2', answer)
+            answer = re.sub(r'([^\n])(```)', r'\1\n\n\2', answer)
+            answer = re.sub(r'(```\n)([^\n])', r'\1\2', answer)
+            answer = re.sub(r'([^\n])(>)', r'\1\n\n\2', answer)
+            answer = re.sub(r'\n{3,}', r'\n\n', answer)
+            return answer.strip()
+        
+        formatted_answer = post_process_answer(answer)
+
+        # --- Defensive Parsing ---
+        try:
+            structured_content = parse_structured_response(formatted_answer)
+            print(f"DEBUG: structured_content after parsing: {structured_content}")
+        except Exception as e:
+            print(f"DEBUG: parse_structured_response failed: {e}")
+            # fallback: wrap raw text
+            structured_content = {"title": "", "description": formatted_answer, "code_blocks": [], "tables": [], "lists": [], "links": [], "notes": [], "warnings": []}
+        
         response_type = determine_response_type(structured_content)
         
         return StructuredResponse(
@@ -443,11 +567,15 @@ async def ask_question(request: QuestionRequest):
             content=structured_content,
             memory_count=len(memory.chat_memory.messages)
         )
+    
     except Exception as e:
+        error_message = f"Error processing question: {str(e)}"
+        print(f"DEBUG: {error_message}")
         return {
             "type": "error",
-            "errors": [f"Error processing question: {str(e)}"]
+            "errors": [error_message]
         }
+
 
 @app.post("/ask/stream")
 async def ask_question_stream(request: QuestionRequest):
@@ -474,9 +602,22 @@ async def ask_question_stream(request: QuestionRequest):
         }
         
         result = rag_chain.invoke(context_with_history)
-        answer = result.get("answer") if isinstance(result, dict) else None
-        if answer is None:
-            raise ValueError(f"RAG chain did not return an 'answer' key. Got: {result}")
+        # Robust answer extraction (same as /ask)
+        answer = None
+        if isinstance(result, dict):
+            for key in ["output", "answer", "text", "result", "response"]:
+                if key in result and isinstance(result[key], str):
+                    answer = result[key]
+                    break
+            if answer is None:
+                for v in result.values():
+                    if isinstance(v, str):
+                        answer = v
+                        break
+            if answer is None:
+                answer = str(result)
+        else:
+            answer = str(result)
         
         # Save the conversation to memory
         memory.chat_memory.add_user_message(request.question)
