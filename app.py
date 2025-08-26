@@ -94,6 +94,11 @@ last_updated = None
 # Memory management
 conversation_memories: Dict[str, ConversationBufferMemory] = {}
 
+# Ingestion-time extracted structures
+extracted_endpoints: List[Dict[str, Any]] = []
+api_catalog_text: Optional[str] = None
+detected_base_url: Optional[str] = None
+
 def sanitize_index_name(name: str) -> str:
     s = re.sub(r'[^0-9a-zA-Z]', '_', name).strip('_')
     if not s:
@@ -131,6 +136,289 @@ def get_memory_for_session(session_id: str) -> ConversationBufferMemory:
             return_messages=True
         )
     return conversation_memories[session_id]
+
+def build_section_path(metadata: Dict[str, Any]) -> str:
+    """Build a breadcrumb-like section path from markdown header metadata."""
+    keys_order = ["h1", "h2", "h3", "h4", "h5", "h6", "section", "title"]
+    parts: List[str] = []
+    for key in keys_order:
+        if key in metadata and metadata[key]:
+            parts.append(str(metadata[key]))
+    return " > ".join(parts)
+
+def extract_endpoints_from_text(text: str) -> List[Dict[str, Any]]:
+    """Extract endpoint candidates (supports Markdown like '**POST** `/path`' as well).
+    Returns list of dicts with http_method and endpoint.
+    """
+    endpoints: List[Dict[str, Any]] = []
+
+    # Pattern A: Plain 'METHOD /path'
+    pattern_plain = re.compile(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(/[^\s`#]+)")
+    # Pattern B: Markdown '**METHOD** `/path`'
+    pattern_md = re.compile(r"(?is)\*\*\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s*\*\*\s*`\s*(/[^`\s]+)\s*`")
+
+    for match in pattern_plain.finditer(text):
+        method = match.group(1).upper()
+        path = match.group(2).strip()
+        window_start = max(0, match.start() - 300)
+        window_end = min(len(text), match.end() + 500)
+        window = text[window_start:window_end]
+        has_curl = bool(re.search(r"(?im)```\s*curl|^\s*curl\s", window))
+        auth = "bearer" if re.search(r"(?i)authorization|bearer|oauth|api[-_ ]?key", window) else "unknown"
+        summary_match = re.search(r"(?m)^[#]{1,3}\s+.*$", window)
+        summary = summary_match.group(0).lstrip('# ').strip() if summary_match else ""
+        endpoints.append({
+            "http_method": method,
+            "endpoint": path,
+            "summary": summary,
+            "auth": auth,
+            "has_curl": has_curl,
+        })
+
+    for match in pattern_md.finditer(text):
+        method = match.group(1).upper()
+        path = match.group(2).strip()
+        pos = match.start()
+        window_start = max(0, pos - 300)
+        window_end = min(len(text), pos + 500)
+        window = text[window_start:window_end]
+        has_curl = bool(re.search(r"(?im)```\s*curl|^\s*curl\s", window))
+        auth = "bearer" if re.search(r"(?i)authorization|bearer|oauth|api[-_ ]?key", window) else "unknown"
+        summary_match = re.search(r"(?m)^[#]{1,3}\s+.*$", window)
+        summary = summary_match.group(0).lstrip('# ').strip() if summary_match else ""
+        endpoints.append({
+            "http_method": method,
+            "endpoint": path,
+            "summary": summary,
+            "auth": auth,
+            "has_curl": has_curl,
+        })
+    # Deduplicate by method+path while keeping first seen summary
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for e in endpoints:
+        key = f"{e['http_method']} {e['endpoint']}"
+        if key not in dedup:
+            dedup[key] = e
+    return list(dedup.values())
+
+def build_catalog_text(title: str, endpoints: List[Dict[str, Any]]) -> str:
+    """Create a synthetic API catalog markdown-like text for fast listing."""
+    lines = [f"## {title} - API Catalog", "", "Method | Path | Summary | Auth | Has cURL", "---|---|---|---|---"]
+    for e in endpoints:
+        lines.append(f"{e.get('http_method','')} | {e.get('endpoint','')} | {e.get('summary','')} | {e.get('auth','')} | {str(e.get('has_curl', False))}")
+    return "\n".join(lines)
+
+def detect_intent(question: str) -> str:
+    """Simple intent detector: list_apis | get_payload | find_curl | generate_curl | other."""
+    q = question.lower()
+    if any(sig in q for sig in [
+        "list apis", "list endpoints", "all apis", "available apis", "available endpoints", "api list", "endpoints list"
+    ]):
+        return "list_apis"
+    if any(sig in q for sig in [
+        "payload", "request body", "request schema", "response schema", "response body", "fields required", "parameters"
+    ]):
+        return "get_payload"
+    if "curl" in q:
+        if any(sig in q for sig in ["generate", "create", "make", "build", "write"]):
+            return "generate_curl"
+        if any(sig in q for sig in ["find", "show", "present", "any", "existing", "example", "available"]):
+            return "find_curl"
+        return "find_curl"
+    return "other"
+
+def parse_explicit_endpoint(question: str) -> Optional[Dict[str, str]]:
+    """Parse patterns like 'GET /users/{id}' from the question."""
+    m = re.search(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(/[^\s#]+)", question)
+    if m:
+        return {"http_method": m.group(1).upper(), "endpoint": m.group(2)}
+    return None
+
+def _extract_curl_blocks_from_text(text: str) -> List[Dict[str, Any]]:
+    """Extract cURL snippets from text. Returns list of {title, code}."""
+    results: List[Dict[str, Any]] = []
+    # Code fences first
+    for m in re.finditer(r"```[a-zA-Z]*\n([\s\S]*?)```", text):
+        body = m.group(1)
+        if re.search(r"(?im)^\s*curl\b", body):
+            results.append({"title": "cURL example", "code": body.strip()})
+    # Fallback: standalone curl lines/blocks
+    for m in re.finditer(r"(?im)^(\s*curl\b[\s\S]*?)(?:\n\s*\n|$)", text):
+        snippet = m.group(1).strip()
+        if snippet and all(snippet != r["code"] for r in results):
+            results.append({"title": "cURL example", "code": snippet})
+    return results
+
+def _query_weaviate_for_curl(method: Optional[str], endpoint: Optional[str], limit: int = 5) -> List[Dict[str, Any]]:
+    """Retrieve documents from Weaviate likely containing cURL examples; optionally filter by endpoint/method.
+    Returns list of {title, section_path, code} entries.
+    """
+    try:
+        if 'weaviate_client_instance' not in globals() or weaviate_client_instance is None:
+            return []
+        cls = weaviate_index_name if 'weaviate_index_name' in globals() and weaviate_index_name else WEAVIATE_INDEX_NAME
+        props = ["page_content", "title", "section_path", "endpoint", "http_method"]
+        query = weaviate_client_instance.query.get(cls, props).with_limit(limit)
+        operands: List[Dict[str, Any]] = []
+        if endpoint:
+            operands.append({"path": ["endpoint"], "operator": "Equal", "valueText": endpoint})
+        if method:
+            operands.append({"path": ["http_method"], "operator": "Equal", "valueText": method})
+        if len(operands) == 1:
+            query = query.with_where(operands[0])
+        elif len(operands) > 1:
+            query = query.with_where({"operator": "And", "operands": operands})
+        result = query.do()
+        objs = result.get("data", {}).get("Get", {}).get(cls, []) if isinstance(result, dict) else []
+        out: List[Dict[str, Any]] = []
+        for obj in objs:
+            text = obj.get("page_content") or ""
+            title = obj.get("title") or ""
+            section_path = obj.get("section_path") or ""
+            for block in _extract_curl_blocks_from_text(text):
+                out.append({
+                    "title": block.get("title") or title or "cURL example",
+                    "section_path": section_path,
+                    "code": block["code"],
+                })
+                if len(out) >= limit:
+                    return out
+        return out
+    except Exception as err:
+        print(f"DEBUG: _query_weaviate_for_curl error: {err}")
+        return []
+
+def _guess_headers_for_endpoint(method: str, endpoint: str) -> Dict[str, str]:
+    """Minimal headers based on extracted metadata."""
+    headers: Dict[str, str] = {}
+    for e in extracted_endpoints:
+        if e.get("endpoint") == endpoint and e.get("http_method") == method:
+            if str(e.get("auth", "")).lower() == "bearer":
+                headers["Authorization"] = "Bearer <API_TOKEN>"
+            break
+    if method in {"POST", "PUT", "PATCH"}:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+def _format_curl(method: str, url: str, headers: Dict[str, str], body: Optional[str]) -> str:
+    parts: List[str] = [f"curl -X {method} {url}"]
+    for k, v in headers.items():
+        parts.append(f"  -H '{k}: {v}'")
+    if body and body.strip():
+        parts.append(f"  -d '{body.strip()}'")
+    return " \\\n".join(parts)
+
+def _synthesize_curl(method: str, endpoint: str, example_body: Optional[str] = None) -> str:
+    base = detected_base_url or "<BASE URL>"
+    url = f"{base.rstrip('/')}{endpoint}"
+    headers = _guess_headers_for_endpoint(method, endpoint)
+    return _format_curl(method, url, headers, example_body)
+
+def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_synthesis: bool = False) -> Dict[str, Any]:
+    """Find cURL in docs stored in Weaviate. If none and allow_synthesis=True, synthesize one.
+
+    Returns a structured content dict with code_blocks and notes on success.
+    Returns an error dict if not found and synthesis not allowed or method/path missing.
+    """
+    # 1) Find examples in docs
+    examples = _query_weaviate_for_curl(method, endpoint, limit=3)
+    if examples:
+        code_blocks = [{"language": "bash", "title": e.get("title") or "cURL example", "code": e["code"]} for e in examples]
+        notes = [f"Source section: {e.get('section_path','')}" for e in examples if e.get('section_path')]
+        return {
+            "title": "cURL examples",
+            "description": "Found cURL examples in the documentation.",
+            "code_blocks": code_blocks,
+            "tables": [],
+            "lists": [],
+            "links": [],
+            "notes": notes,
+            "warnings": []
+        }
+
+    # 2) Not present
+    if not allow_synthesis:
+        target = f" for {method} {endpoint}" if method and endpoint else ""
+        return {
+            "type": "error",
+            "errors": [f"No cURL example found in the documentation{target}."]
+        }
+
+    # 3) Synthesize only when explicitly allowed
+    if method and endpoint:
+        curl_cmd = _synthesize_curl(method, endpoint, example_body=None)
+        return {
+            "title": "cURL (synthesized)",
+            "description": "Synthesized from documentation metadata. Replace placeholders before use.",
+            "code_blocks": [{"language": "bash", "title": f"{method} {endpoint}", "code": curl_cmd}],
+            "tables": [],
+            "lists": [],
+            "links": [],
+            "notes": ["Synthesized due to missing explicit example in docs."],
+            "warnings": []
+        }
+
+    return {"type": "error", "errors": ["Method and endpoint are required to generate a cURL command."]}
+
+def generate_curls_for_all_endpoints() -> Dict[str, Any]:
+    """Generate or retrieve cURLs for all extracted endpoints in one response."""
+    code_blocks: List[Dict[str, str]] = []
+    notes: List[str] = []
+    if not extracted_endpoints:
+        return {"type": "error", "errors": ["No endpoints found in the uploaded documentation."]}
+    for e in extracted_endpoints:
+        method = e.get("http_method")
+        endpoint = e.get("endpoint")
+        res = get_curl_from_docs(method, endpoint, allow_synthesis=True)
+        if isinstance(res, dict):
+            for cb in res.get("code_blocks", []) or []:
+                # Ensure title shows method + path
+                title = cb.get("title") or f"{method} {endpoint}"
+                code_blocks.append({"language": "bash", "title": title, "code": cb.get("code", "")})
+            for n in res.get("notes", []) or []:
+                if n not in notes:
+                    notes.append(n)
+    if not code_blocks:
+        return {"type": "error", "errors": ["Unable to generate cURLs for endpoints."]}
+    base_note = f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>"
+    if base_note not in notes:
+        notes.append(base_note)
+    return {
+        "title": "cURL commands for all endpoints",
+        "description": "Generated from documentation context. Replace placeholders before use.",
+        "code_blocks": code_blocks,
+        "tables": [],
+        "lists": [],
+        "links": [],
+        "notes": notes,
+        "warnings": []
+    }
+
+def detect_base_url_from_text(text: str) -> Optional[str]:
+    """Heuristically detect a base URL like https://api.example.com or https://host/v1."""
+    # Prefer URLs that look like API hosts
+    m = re.search(r"https?://[a-zA-Z0-9_.:-]+(?:/v\d+)?", text)
+    return m.group(0) if m else None
+
+def build_task_preface(intent: str, method: Optional[str], path: Optional[str]) -> str:
+    if intent == "list_apis":
+        return (
+            "Task: List all API endpoints as a table. Return JSON with type='table' and tables=[{headers,rows}]. "
+            "Use columns: Method, Path, Summary, Auth, Has cURL. Include citations in notes.\n"
+        )
+    if intent == "get_payload":
+        target = f" for {method} {path}" if method and path else ""
+        return (
+            f"Task: Return request/response payload details{target}. Strict JSON: type='values', "
+            "values={request:{schema,example}, responses:[{status,schema,example}]}. Include citations in notes.\n"
+        )
+    if intent == "generate_curl":
+        target = f" for {method} {path}" if method and path else ""
+        return (
+            f"Task: Generate cURL commands{target}. Strict JSON: type='code', code_blocks=[{{language:'bash',title,code}}]. "
+            "Use placeholders like <API_TOKEN>, <BASE_URL> if needed; include minimal required headers. Include citations in notes.\n"
+        )
+    return ""
 
 def parse_structured_response(answer: str) -> Dict[str, Any]:
     """Parse the LLM response and structure it into different content types."""
@@ -301,6 +589,10 @@ def process_documentation(content: str, title: str = "API Documentation") -> dic
     for d in docs:
         d.metadata.setdefault("source", title)
 
+    # Enrich metadata with section_path
+    for d in docs:
+        d.metadata["section_path"] = build_section_path(d.metadata)
+
     # Chunk documents
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks: List[Document] = splitter.split_documents(docs)
@@ -318,22 +610,65 @@ def process_documentation(content: str, title: str = "API Documentation") -> dic
     weaviate_client_instance = client
     weaviate_index_name = index_name
 
-    # Initialize LangChain Weaviate store with the client
-    vector_store = WeaviateStore(
+    # Defer vector store creation until after we assemble all documents
+    vector_store = None
+
+    # Extract endpoints, base URL and build a synthetic catalog
+    global extracted_endpoints, api_catalog_text, detected_base_url
+    extracted_endpoints = extract_endpoints_from_text(raw)
+    api_catalog_text = build_catalog_text(title, extracted_endpoints) if extracted_endpoints else None
+    detected_base_url = detect_base_url_from_text(raw)
+
+    # Build Documents for endpoints and catalog
+    endpoint_docs: List[Document] = []
+    for e in extracted_endpoints:
+        content_lines = [
+            f"### {e['http_method']} {e['endpoint']}",
+            e.get("summary", ""),
+            f"Auth: {e.get('auth','unknown')}",
+        ]
+        endpoint_doc = Document(
+            page_content="\n".join([line for line in content_lines if line]),
+            metadata={
+                "source": title,
+                "title": f"{e['http_method']} {e['endpoint']}",
+                "section_path": f"API > {e['http_method']} {e['endpoint']}",
+                "endpoint": e["endpoint"],
+                "http_method": e["http_method"],
+                "auth": e.get("auth", "unknown"),
+                "has_curl": e.get("has_curl", False),
+                "is_catalog": False,
+            }
+        )
+        endpoint_docs.append(endpoint_doc)
+
+    catalog_docs: List[Document] = []
+    if api_catalog_text:
+        catalog_docs.append(Document(
+            page_content=api_catalog_text,
+            metadata={
+                "source": title,
+                "title": f"{title} Catalog",
+                "section_path": "API > Catalog",
+                "is_catalog": True,
+            }
+        ))
+
+    # Add documents (chunks + endpoint summaries + catalog)
+    all_docs: List[Document] = chunks + endpoint_docs + catalog_docs
+    # Create Weaviate store and import docs in one step (more reliable schema creation)
+    vector_store = WeaviateStore.from_documents(
+        documents=all_docs,
+        embedding=embeddings,
         client=client,
         index_name=index_name,
         text_key="page_content",
-        attributes=["source", "title"],
-        embedding=embeddings
     )
 
-    # Add documents (this will embed via CohereEmbeddings and push to Weaviate)
-    vector_store.add_documents(chunks)
-
     # Estimate db size / docs count
-    documents_count = len(chunks)
-    content_size = sum(len(c.page_content.encode('utf-8')) for c in chunks)
-    metadata_size = sum(len(str(c.metadata).encode('utf-8')) for c in chunks)
+    documents_count = len(all_docs)
+    content_size = sum(len(c.page_content.encode('utf-8')) for c in all_docs)
+    metadata_size = sum(len(str(c.metadata).encode('utf-8')) for c in all_docs)
     approx_vector_bytes = len(chunks) * 1536 * 4 if len(chunks) > 0 else 0
     total_size_bytes = approx_vector_bytes + content_size + metadata_size + (1024 * 1024)
     db_size_mb = total_size_bytes / (1024 * 1024)
@@ -380,6 +715,17 @@ Guidelines:
 - Do not use markdown formatting, only valid JSON.
 - If you do not know the answer, reply with:
     { "type": "error", "errors": ["I don't know based on the provided context."] }
+
+Grounding Rules:
+- Only answer using retrieved CONTEXT. If a requested fact (field, path, header, status code) is absent, state it is not found in the provided docs.
+- Prefer verbatim field names and exact endpoint paths from the context.
+- For cURL: if examples are missing, synthesize from the retrieved context using safe placeholders (e.g., <API_KEY>, <BASE_URL>, <VALUE>), and include necessary headers.
+- Include citations in "notes" for returned elements when possible using source title and section_path.
+
+Task Routing Hints:
+- If the user asks to list APIs/endpoints, return a table with method and path, plus summaries.
+- If the user asks for payloads, return request and response schemas with status codes.
+- If the user asks for cURL, produce a single copyable command and a multiline variant.
 """
     # Escape braces to prevent template variable parsing inside example JSON
     SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{", "{{").replace("}", "}}")
@@ -397,7 +743,7 @@ Answer:"""
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
-        ("human", HUMAN_PROMPT),
+        ("human", """{task_preface}\n\nCONTEXT:\n{context}\n\nCHAT HISTORY:\n{chat_history}\n\nQUESTION:\n{input}\n\nAnswer:"""),
     ])
     
     doc_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
@@ -406,15 +752,50 @@ Answer:"""
     from langchain.schema.runnable import RunnableLambda
     def _map_inputs_for_chain(x: Dict[str, Any]) -> Dict[str, Any]:
         user_input = x.get("input", "")
+        # Intent detection
+        intent = detect_intent(user_input)
+        # For cURL discovery: do not synthesize unless asked
+        if intent in {"find_curl", "generate_curl"}:
+            explicit = parse_explicit_endpoint(user_input)
+            method = explicit.get("http_method") if explicit else None
+            endpoint = explicit.get("endpoint") if explicit else None
+            allow_synth = intent == "generate_curl"
+            curl_struct = get_curl_from_docs(method, endpoint, allow_synthesis=allow_synth)
+            # Return early by embedding the curl_struct as context so LLM can format
+            return {
+                "context": [Document(page_content=json.dumps(curl_struct))],
+                "input": user_input,
+                "chat_history": x.get("chat_history", ""),
+                "task_preface": build_task_preface(intent, method, endpoint)
+            }
+        # If listing APIs, return catalog context directly
+        if intent == "list_apis" and api_catalog_text:
+            catalog_doc = Document(page_content=api_catalog_text, metadata={"title": "API Catalog", "is_catalog": True})
+            return {
+                "context": [catalog_doc],
+                "input": user_input,
+                "chat_history": x.get("chat_history", ""),
+                "task_preface": build_task_preface(intent, None, None)
+            }
+
+        # Parse explicit endpoint to bias retrieval
+        explicit = parse_explicit_endpoint(user_input)
         try:
-            docs = retriever.invoke(user_input)
+            if explicit:
+                # Narrow the retriever search by appending method/path tokens
+                biased_query = f"{explicit['http_method']} {explicit['endpoint']}\n\n{user_input}"
+                docs = retriever.invoke(biased_query)
+            else:
+                docs = retriever.invoke(user_input)
         except Exception as retrieval_error:
             print(f"DEBUG: retriever.invoke error: {retrieval_error}")
             docs = []
+        task_preface = build_task_preface(intent, explicit.get("http_method") if explicit else None, explicit.get("endpoint") if explicit else None)
         return {
             "context": docs,
             "input": user_input,
-            "chat_history": x.get("chat_history", "")
+            "chat_history": x.get("chat_history", ""),
+            "task_preface": task_preface
         }
     retriever_chain = RunnableLambda(_map_inputs_for_chain)
     rag_chain = retriever_chain | doc_chain
@@ -493,6 +874,73 @@ async def ask_question(request: QuestionRequest):
     try:
         # Get memory for this session
         memory = get_memory_for_session(request.session_id)
+        
+        # Handle list APIs intent directly to ensure proper structured table
+        intent_direct = detect_intent(request.question)
+        if intent_direct == "list_apis":
+            if not extracted_endpoints:
+                return {
+                    "type": "error",
+                    "errors": [
+                        "No documentation has been processed yet or no endpoints were extracted. Please upload the API documentation first."
+                    ]
+                }
+            headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
+            rows: List[List[str]] = []
+            for e in extracted_endpoints:
+                rows.append([
+                    e.get("http_method", ""),
+                    e.get("endpoint", ""),
+                    e.get("summary", ""),
+                    str(e.get("auth", "unknown")),
+                    str(bool(e.get("has_curl", False)))
+                ])
+            structured_content = {
+                "title": "API Catalog",
+                "description": "List of endpoints discovered from the uploaded docs.",
+                "tables": [{"headers": headers, "rows": rows}],
+                "code_blocks": [],
+                "lists": [],
+                "links": [],
+                "notes": [
+                    f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>",
+                    "Grounded in uploaded documentation."
+                ],
+                "warnings": []
+            }
+            memory.chat_memory.add_user_message(request.question)
+            memory.chat_memory.add_ai_message(json.dumps(structured_content))
+            return StructuredResponse(
+                type="table",
+                content=structured_content,
+                memory_count=len(memory.chat_memory.messages)
+            )
+
+        # Handle cURL intents up-front to avoid LLM reformatting
+        intent_now = detect_intent(request.question)
+        if intent_now in {"find_curl", "generate_curl"}:
+            explicit = parse_explicit_endpoint(request.question)
+            method = explicit.get("http_method") if explicit else None
+            endpoint = explicit.get("endpoint") if explicit else None
+            allow_synth = intent_now == "generate_curl"
+            # If the user asks for all endpoints’ cURLs
+            if allow_synth and ("all" in request.question.lower() or "each" in request.question.lower()):
+                result_struct = generate_curls_for_all_endpoints()
+            else:
+                result_struct = get_curl_from_docs(method, endpoint, allow_synthesis=allow_synth)
+            # Save to memory
+            memory.chat_memory.add_user_message(request.question)
+            memory.chat_memory.add_ai_message(json.dumps(result_struct))
+            # If error dict, return as-is
+            if isinstance(result_struct, dict) and result_struct.get("type") == "error":
+                return result_struct
+            # Normal structured return
+            response_type = determine_response_type(result_struct)
+            return StructuredResponse(
+                type=response_type,
+                content=result_struct,
+                memory_count=len(memory.chat_memory.messages)
+            )
         
         # Get chat history (last 10 messages)
         chat_history = memory.chat_memory.messages

@@ -60,6 +60,29 @@
   word-break: break-word;
 }
 
+/* structured response */
+.resp-root { display: flex; flex-direction: column; gap: 12px; }
+.resp-title { font-weight: 600; font-size: 16px; color: #0f172a; }
+.resp-desc { white-space: pre-wrap; color: #111827; }
+.resp-section { display: flex; flex-direction: column; gap: 10px; }
+.resp-list { padding-left: 18px; }
+.resp-links a { display: inline-block; margin-right: 8px; color: #0369a1; }
+
+.resp-table-wrap { overflow-x: auto; }
+.resp-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.resp-table th, .resp-table td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+.resp-table th { background: #f3f4f6; font-weight: 600; }
+
+.resp-code { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+.resp-code-header { display: flex; justify-content: space-between; align-items: center; background: #f8fafc; padding: 6px 10px; }
+.resp-code-lang { font-size: 12px; color: #475569; }
+.resp-copy { background: #0ea5a4; color: #fff; border: none; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.resp-code pre { margin: 0; padding: 12px; background: #0b1220; color: #e2e8f0; overflow-x: auto; }
+
+.resp-error { background: #fef2f2; border: 1px solid #fecaca; color: #7f1d1d; padding: 10px; border-radius: 8px; }
+.resp-meta { display: flex; gap: 16px; font-size: 13px; color: #374151; }
+.resp-notes ul, .resp-warnings ul { margin: 6px 0 0 16px; padding: 0; }
+
 .chat-sources {
   margin-top: 8px;
   font-size: 13px;
