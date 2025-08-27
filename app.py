@@ -407,7 +407,7 @@ def detect_intent(question: str) -> str:
     if "curl" in q:
         if any(sig in q for sig in ["generate", "create", "make", "build", "write"]):
             return "generate_curl"
-        if any(sig in q for sig in ["find", "show", "present", "any", "existing", "example", "available", "list"]):
+        if any(sig in q for sig in ["find", "show", "present", "any", "existing", "example", "available", "list", "all"]):
             return "find_curl"
         # ambiguous mention of curl → generic
         return "other"
@@ -419,9 +419,17 @@ def detect_intent(question: str) -> str:
 
 def parse_explicit_endpoint(question: str) -> Optional[Dict[str, str]]:
     """Parse patterns like 'GET /users/{id}' from the question."""
+    # First try explicit method + path pattern
     m = re.search(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(/[^\s#]+)", question)
     if m:
         return {"http_method": m.group(1).upper(), "endpoint": m.group(2)}
+    
+    # Then try to extract just the method if no path is specified
+    # This helps with queries like "generate curl for PUT endpoints"
+    method_match = re.search(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b", question)
+    if method_match:
+        return {"http_method": method_match.group(1).upper(), "endpoint": None}
+    
     return None
 
 def _extract_curl_blocks_from_text(text: str) -> List[Dict[str, Any]]:
@@ -704,6 +712,36 @@ def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_syn
 
     # 2) Not present
     if not allow_synthesis:
+        # If no method/endpoint specified, this means user wants to see all available cURLs
+        if not method and not endpoint:
+            # Try to find any cURL examples in the raw document
+            try:
+                if 'raw_document_text' in globals() and raw_document_text:
+                    raw_examples = _extract_curl_blocks_from_text(raw_document_text)
+                else:
+                    raw_examples = []
+            except NameError:
+                raw_examples = []
+                if raw_examples:
+                    code_blocks = [{"language": "bash", "title": e.get("title") or "cURL example", "code": e.get("code", "")} for e in raw_examples[:max_examples]]
+                    return {
+                        "title": "All cURL Examples Found",
+                        "description": f"Found {len(code_blocks)} cURL examples in the documentation.",
+                        "code_blocks": code_blocks,
+                        "tables": [],
+                        "lists": [],
+                        "links": [],
+                        "notes": [f"Total cURL examples found: {len(code_blocks)}"],
+                        "warnings": []
+                    }
+            
+            # If still no examples found, return a helpful message
+            return {
+                "type": "error",
+                "errors": ["No cURL examples found in the documentation. Try asking to 'generate cURLs' instead."]
+            }
+        
+        # Specific method/endpoint requested but not found
         target = f" for {method} {endpoint}" if method and endpoint else ""
         return {
             "type": "error",
@@ -730,7 +768,10 @@ def generate_curls_for_all_endpoints(api_version: Optional[str] = None) -> Dict[
     """Generate or retrieve cURLs for all extracted endpoints in one response."""
     code_blocks: List[Dict[str, str]] = []
     notes: List[str] = []
-    if not extracted_endpoints:
+    try:
+        if 'extracted_endpoints' not in globals() or not extracted_endpoints:
+            return {"type": "error", "errors": ["No endpoints found in the uploaded documentation."]}
+    except NameError:
         return {"type": "error", "errors": ["No endpoints found in the uploaded documentation."]}
     for e in extracted_endpoints:
         method = e.get("http_method")
@@ -746,7 +787,10 @@ def generate_curls_for_all_endpoints(api_version: Optional[str] = None) -> Dict[
                     notes.append(n)
     if not code_blocks:
         return {"type": "error", "errors": ["Unable to generate cURLs for endpoints."]}
-    base_note = f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>"
+    try:
+        base_note = f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>"
+    except NameError:
+        base_note = "Base URL: <BASE URL>"
     if base_note not in notes:
         notes.append(base_note)
     return {
@@ -1015,26 +1059,38 @@ def generate_curl_for_all_endpoints() -> Dict[str, Any]:
 
 def build_endpoint_candidates_structured(limit: int = 10) -> Dict[str, Any]:
     """Return a structured table of available endpoints to help user specify target."""
-    headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
-    rows: List[List[str]] = []
-    for e in extracted_endpoints[:limit]:
-        rows.append([
-            e.get("http_method", ""),
-            e.get("endpoint", ""),
-            e.get("summary", ""),
-            e.get("auth", "unknown"),
-            str(e.get("has_curl", False))
-        ])
-    return {
-        "title": "Endpoint candidates",
-        "description": "Specify method and path (e.g., 'POST /folders') to target an endpoint.",
-        "code_blocks": [],
-        "tables": [{"headers": headers, "rows": rows}],
-        "lists": [],
-        "links": [],
-        "notes": ["Grounded in extracted documentation."],
-        "warnings": []
-    }
+    try:
+        if 'extracted_endpoints' not in globals() or not extracted_endpoints:
+            return {
+                "type": "error",
+                "errors": ["No API endpoints have been extracted yet. Please upload and process documentation first."]
+            }
+        
+        headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
+        rows: List[List[str]] = []
+        for e in extracted_endpoints[:limit]:
+            rows.append([
+                e.get("http_method", ""),
+                e.get("endpoint", ""),
+                e.get("summary", ""),
+                e.get("auth", "unknown"),
+                str(e.get("has_curl", False))
+            ])
+        return {
+            "title": "Endpoint candidates",
+            "description": "Specify method and path (e.g., 'POST /folders') to target an endpoint.",
+            "code_blocks": [],
+            "tables": [{"headers": headers, "rows": rows}],
+            "lists": [],
+            "links": [],
+            "notes": ["Grounded in extracted documentation."],
+            "warnings": []
+        }
+    except NameError:
+        return {
+            "type": "error",
+            "errors": ["No API endpoints have been extracted yet. Please upload and process documentation first."]
+        }
 
 def handle_curl_query(question: str) -> Dict[str, Any]:
     """Unified cURL handler covering: find, find all, generate, generate all, count.
@@ -1044,7 +1100,7 @@ def handle_curl_query(question: str) -> Dict[str, Any]:
     explicit = parse_explicit_endpoint(question)
     method = explicit.get("http_method") if explicit else None
     endpoint = explicit.get("endpoint") if explicit else None
-    want_all = any(tok in q for tok in ["all", "each", "every"])
+    want_all = any(tok in q for tok in ["all", "each", "every"]) or any(phrase in q for phrase in ["list all", "show all", "all curls", "all curl", "every curl", "each curl"])
     is_count = any(tok in q for tok in ["how many", "count", "number of"])
     is_generate = any(tok in q for tok in ["generate", "create", "build", "write", "make"]) and "curl" in q
     is_find = ("curl" in q) and (any(tok in q for tok in ["find", "show", "present", "list", "available", "examples"]) or not is_generate)
@@ -1060,7 +1116,10 @@ def handle_curl_query(question: str) -> Dict[str, Any]:
     if is_count:
         # Global exact count from raw docs; filtered counts via Weaviate aggregate
         if not method and not endpoint and not keyword_terms:
-            total = curl_examples_total_count
+            try:
+                total = curl_examples_total_count if 'curl_examples_total_count' in globals() else 0
+            except NameError:
+                total = 0
         else:
             agg_count = _count_curl_examples_weaviate(method, endpoint, keyword_terms=keyword_terms)
             total = agg_count if isinstance(agg_count, int) else 0
@@ -1156,9 +1215,81 @@ def handle_curl_query(question: str) -> Dict[str, Any]:
             # Fallback to existing method
             return get_curl_from_docs(method, endpoint, allow_synthesis=True, keyword_terms=keyword_terms, api_version=api_version)
 
+    # Generate cURLs for a specific method (e.g., "generate curl for PUT endpoints")
+    if is_generate and method and not endpoint:
+        # Check if extracted_endpoints exists
+        try:
+            if 'extracted_endpoints' not in globals() or not extracted_endpoints:
+                return {
+                    "type": "error",
+                    "errors": ["No API endpoints have been extracted yet. Please upload and process documentation first."]
+                }
+            
+            # Filter endpoints by method and generate cURLs for each
+            method_endpoints = [e for e in extracted_endpoints if e.get("http_method", "").upper() == method.upper()]
+            
+            if not method_endpoints:
+                return {
+                    "type": "error",
+                    "errors": [f"No endpoints found with method {method}"]
+                }
+        except NameError:
+            return {
+                "type": "error",
+                "errors": ["No API endpoints have been extracted yet. Please upload and process documentation first."]
+            }
+        
+        # Generate cURLs for all endpoints of this method
+        code_blocks = []
+        for endpoint_info in method_endpoints:
+            curl_result = generate_curl_with_claude(
+                method=method,
+                endpoint=endpoint_info.get("endpoint", ""),
+                question=question,
+                additional_context=f"Generate cURL for {method} {endpoint_info.get('endpoint', '')}"
+            )
+            
+            if curl_result.get("success"):
+                code_blocks.append({
+                    "language": "bash",
+                    "title": f"{method} {endpoint_info.get('endpoint', '')}",
+                    "code": curl_result["curl"]
+                })
+        
+        if code_blocks:
+            return {
+                "title": f"Generated cURLs for {method} Endpoints",
+                "description": f"AI-generated cURL commands for all {method} endpoints. Ready for copy-paste.",
+                "code_blocks": code_blocks,
+                "tables": [],
+                "lists": [],
+                "links": [],
+                "notes": [
+                    f"Total {method} endpoints: {len(code_blocks)}",
+                    "Base URL: <BASE_URL>",
+                    "Instructions: Copy any cURL command below and replace placeholders with actual values"
+                ],
+                "warnings": ["These are AI-generated cURLs. Verify against your API documentation."]
+            }
+        else:
+            return {
+                "type": "error",
+                "errors": [f"Failed to generate cURLs for {method} endpoints"]
+            }
+
     # If user wants to generate cURL but didn't specify endpoint, list candidates
+    # Only show candidates if user explicitly asks for them or is confused
     if "curl" in q and is_generate and not (method and endpoint):
-        return build_endpoint_candidates_structured(limit=15)
+        # Check if user wants all cURLs or just didn't specify clearly
+        if want_all or any(tok in q for tok in ["all", "each", "every", "endpoints", "apis"]):
+            # User wants all cURLs, generate them instead of showing candidates
+            return generate_curl_for_all_endpoints()
+        elif any(tok in q for tok in ["help", "what", "which", "show", "list"]):
+            # User is asking for help/guidance, show candidates
+            return build_endpoint_candidates_structured(limit=15)
+        else:
+            # User wants to generate cURLs but wasn't specific - generate for all endpoints
+            return generate_curl_for_all_endpoints()
 
     # Fallback to not-a-curl question
     return {"type": "error", "errors": ["This request is not recognized as a cURL-related query."]}
@@ -1736,7 +1867,15 @@ async def ask_question(request: QuestionRequest):
         # Handle list APIs intent directly to ensure proper structured table
         intent_direct = detect_intent(request.question)
         if intent_direct in {"list_apis", "count_apis", "list_base_urls"}:
-            if not extracted_endpoints:
+            try:
+                if 'extracted_endpoints' not in globals() or not extracted_endpoints:
+                    return {
+                        "type": "error",
+                        "errors": [
+                            "No documentation has been processed yet or no endpoints were extracted. Please upload the API documentation first."
+                        ]
+                    }
+            except NameError:
                 return {
                     "type": "error",
                     "errors": [
@@ -1763,7 +1902,7 @@ async def ask_question(request: QuestionRequest):
                     "lists": [],
                     "links": [],
                     "notes": [
-                        f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>",
+                        f"Base URL: {detected_base_url}" if 'detected_base_url' in globals() and detected_base_url else "Base URL: <BASE URL>",
                         "Grounded in uploaded documentation."
                     ],
                     "warnings": []
@@ -1797,9 +1936,12 @@ async def ask_question(request: QuestionRequest):
                     memory_count=len(memory.chat_memory.messages)
                 )
             if intent_direct == "list_base_urls":
-                urls = set(base_urls_detected or [])
-                if detected_base_url:
-                    urls.add(detected_base_url)
+                try:
+                    urls = set(base_urls_detected or []) if 'base_urls_detected' in globals() else set()
+                    if 'detected_base_url' in globals() and detected_base_url:
+                        urls.add(detected_base_url)
+                except NameError:
+                    urls = set()
                 structured_content = {
                     "title": "Base URLs",
                     "description": "Base URL(s) detected in the documentation.",
