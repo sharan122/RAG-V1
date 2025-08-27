@@ -98,6 +98,9 @@ conversation_memories: Dict[str, ConversationBufferMemory] = {}
 extracted_endpoints: List[Dict[str, Any]] = []
 api_catalog_text: Optional[str] = None
 detected_base_url: Optional[str] = None
+curl_examples_total_count: int = 0
+base_urls_detected: List[str] = []
+raw_document_text: Optional[str] = None
 
 def sanitize_index_name(name: str) -> str:
     s = re.sub(r'[^0-9a-zA-Z]', '_', name).strip('_')
@@ -146,18 +149,41 @@ def build_section_path(metadata: Dict[str, Any]) -> str:
             parts.append(str(metadata[key]))
     return " > ".join(parts)
 
+def _get_curl_code_fence_spans(text: str) -> List[tuple]:
+    """Return list of (start, end) spans for fenced code blocks that contain curl.
+    This allows ignoring only cURL code fences while still parsing ```http fences.
+    """
+    spans: List[tuple] = []
+    for m in re.finditer(r"```([a-zA-Z0-9_-]*)\n([\s\S]*?)```", text):
+        lang = (m.group(1) or "").lower()
+        body = m.group(2) or ""
+        if "curl" in body.lower():
+            spans.append((m.start(), m.end()))
+    return spans
+
+def _pos_in_spans(pos: int, spans: List[tuple]) -> bool:
+    for s, e in spans:
+        if s <= pos < e:
+            return True
+    return False
+
 def extract_endpoints_from_text(text: str) -> List[Dict[str, Any]]:
     """Extract endpoint candidates (supports Markdown like '**POST** `/path`' as well).
     Returns list of dicts with http_method and endpoint.
     """
     endpoints: List[Dict[str, Any]] = []
 
+    curl_spans = _get_curl_code_fence_spans(text)
     # Pattern A: Plain 'METHOD /path'
     pattern_plain = re.compile(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+(/[^\s`#]+)")
     # Pattern B: Markdown '**METHOD** `/path`'
     pattern_md = re.compile(r"(?is)\*\*\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s*\*\*\s*`\s*(/[^`\s]+)\s*`")
+    # Pattern C: 'METHOD path' where path lacks leading '/' but contains a slash, and is not a full URL
+    pattern_no_slash = re.compile(r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+([a-zA-Z][^\s`#]+/[^\s`#]+)")
 
     for match in pattern_plain.finditer(text):
+        if _pos_in_spans(match.start(), curl_spans):
+            continue
         method = match.group(1).upper()
         path = match.group(2).strip()
         window_start = max(0, match.start() - 300)
@@ -176,11 +202,36 @@ def extract_endpoints_from_text(text: str) -> List[Dict[str, Any]]:
         })
 
     for match in pattern_md.finditer(text):
+        if _pos_in_spans(match.start(), curl_spans):
+            continue
         method = match.group(1).upper()
         path = match.group(2).strip()
         pos = match.start()
         window_start = max(0, pos - 300)
         window_end = min(len(text), pos + 500)
+        window = text[window_start:window_end]
+        has_curl = bool(re.search(r"(?im)```\s*curl|^\s*curl\s", window))
+        auth = "bearer" if re.search(r"(?i)authorization|bearer|oauth|api[-_ ]?key", window) else "unknown"
+        summary_match = re.search(r"(?m)^[#]{1,3}\s+.*$", window)
+        summary = summary_match.group(0).lstrip('# ').strip() if summary_match else ""
+        endpoints.append({
+            "http_method": method,
+            "endpoint": path,
+            "summary": summary,
+            "auth": auth,
+            "has_curl": has_curl,
+        })
+    # Pattern C: Normalize missing leading '/'
+    for match in pattern_no_slash.finditer(text):
+        if _pos_in_spans(match.start(), curl_spans):
+            continue
+        method = match.group(1).upper()
+        raw_path = match.group(2).strip()
+        if re.match(r"(?i)^https?://", raw_path):
+            continue
+        path = raw_path if raw_path.startswith('/') else f"/{raw_path}"
+        window_start = max(0, match.start() - 300)
+        window_end = min(len(text), match.end() + 500)
         window = text[window_start:window_end]
         has_curl = bool(re.search(r"(?im)```\s*curl|^\s*curl\s", window))
         auth = "bearer" if re.search(r"(?i)authorization|bearer|oauth|api[-_ ]?key", window) else "unknown"
@@ -201,6 +252,138 @@ def extract_endpoints_from_text(text: str) -> List[Dict[str, Any]]:
             dedup[key] = e
     return list(dedup.values())
 
+def _validate_endpoint_presence(raw_text: str, method: str, path: str) -> bool:
+    """Verify that a (method, path) appears in the raw text in common forms."""
+    patterns = [
+        rf"(?im)\b{re.escape(method)}\s+{re.escape(path)}\b",
+        rf"(?is)\*\*\s*{re.escape(method)}\s*\*\*\s*`\s*{re.escape(path)}\s*`",
+        rf"(?im)\b{re.escape(method)}\s+`?{re.escape(path).lstrip('/')}\b",
+    ]
+    for p in patterns:
+        if re.search(p, raw_text):
+            return True
+    return False
+
+def _llm_recall_endpoints(raw_text: str, max_chars: int = 160000) -> List[Dict[str, Any]]:
+    """Use Claude to propose additional endpoints (method + path). Returns list of dicts.
+    We cap input size to avoid token limits.
+    """
+    try:
+        snippet = raw_text[:max_chars]
+        llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0, max_tokens=500)
+        prompt = (
+            "You are reading API docs. Extract unique endpoints explicitly mentioned.\n"
+            "Return STRICT JSON: {\n  \"endpoints\": [ { \"method\": \"GET|POST|...\", \"path\": \"/path\", \"summary\": \"...\" } ]\n}\n"
+            "Do not invent. Only include items that actually appear in the text.\n\nDOC:\n" + snippet
+        )
+        resp = llm.invoke(prompt)
+        text = getattr(resp, 'content', None) or (resp if isinstance(resp, str) else str(resp))
+        m = re.search(r"\{[\s\S]*\}", text)
+        data = json.loads(m.group(0)) if m else json.loads(text)
+        items = data.get("endpoints") if isinstance(data, dict) else None
+        out: List[Dict[str, Any]] = []
+        if isinstance(items, list):
+            for it in items:
+                method = str(it.get("method", "")).upper().strip()
+                path = str(it.get("path", "")).strip()
+                summary = str(it.get("summary", "")).strip() if it.get("summary") else ""
+                if method in {"GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"} and path:
+                    if not path.startswith('/') and not re.match(r"(?i)^https?://", path):
+                        path = "/" + path
+                    out.append({"http_method": method, "endpoint": path, "summary": summary})
+        return out
+    except Exception:
+        return []
+
+def extract_all_base_urls(text: str) -> List[str]:
+    """Extract all plausible base URLs from the documentation text."""
+    try:
+        urls = re.findall(r"https?://[a-zA-Z0-9_.:-/]+", text)
+        # Deduplicate while preserving order
+        seen = set()
+        ordered: List[str] = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                ordered.append(u)
+        return ordered[:50]
+    except Exception:
+        return []
+
+def attempt_parse_openapi(raw_text: str) -> List[Dict[str, Any]]:
+    """Try to parse OpenAPI/Swagger content to extract endpoints. Returns same shape as extract_endpoints_from_text.
+    Conservative: only acts if 'openapi:' or 'swagger:' keyword is present. Fallback returns empty list on failure.
+    """
+    endpoints: List[Dict[str, Any]] = []
+    try:
+        if 'openapi:' not in raw_text and 'swagger:' not in raw_text:
+            return []
+        import yaml  # PyYAML
+        data = yaml.safe_load(raw_text)
+        paths = data.get('paths', {}) if isinstance(data, dict) else {}
+        for path, methods in paths.items():
+            if not isinstance(methods, dict):
+                continue
+            for method, info in methods.items():
+                method_upper = str(method).upper()
+                if method_upper not in {"GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"}:
+                    continue
+                summary = (info or {}).get('summary') or ''
+                tags = (info or {}).get('tags') or []
+                endpoints.append({
+                    "http_method": method_upper,
+                    "endpoint": path,
+                    "summary": summary,
+                    "auth": "unknown",
+                    "has_curl": False,
+                    "tags": tags,
+                })
+        return endpoints
+    except Exception:
+        return []
+
+def build_structured_endpoint_json(base_url: Optional[str], endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a structured JSON object for hybrid storage for deterministic lookups."""
+    return {
+        "endpoint": endpoint.get("endpoint"),
+        "method": endpoint.get("http_method"),
+        "base_url": base_url,
+        "summary": endpoint.get("summary", ""),
+        "parameters": endpoint.get("parameters", []),
+        "tags": endpoint.get("tags", []),
+        "sections": ["description", "parameters", "examples"],
+        "_type": "api_endpoint_structured"
+    }
+
+def _extract_method_and_terms(question: str) -> Dict[str, Any]:
+    """Detect method tokens and simple search terms from the question for filtering list/count."""
+    q = question.lower()
+    method = None
+    for m in ["get","post","put","patch","delete","options","head"]:
+        if re.search(rf"\b{m}\b", q):
+            method = m.upper()
+            break
+    # extract path-like fragments or keywords
+    path_tokens = re.findall(r"/(?:[a-zA-Z0-9._%\-/{}]+)", question)
+    words = [w for w in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", q) if w not in {"apis","endpoints","list","show","all","of","the","for","with","and","get","post","put","patch","delete","options","head","base","urls","url","count","number"}]
+    terms = set([t.lower() for t in path_tokens] + words[:6])
+    return {"method": method, "terms": terms}
+
+def _filter_endpoints_for_query(endpoints: List[Dict[str, Any]], question: str) -> List[Dict[str, Any]]:
+    crit = _extract_method_and_terms(question)
+    method = crit["method"]
+    terms: set = crit["terms"]
+    results: List[Dict[str, Any]] = []
+    for e in endpoints:
+        if method and e.get("http_method") != method:
+            continue
+        if terms:
+            hay = (e.get("endpoint","") + " " + e.get("summary","")) .lower()
+            if not any(term in hay for term in list(terms)):
+                continue
+        results.append(e)
+    return results or endpoints
+
 def build_catalog_text(title: str, endpoints: List[Dict[str, Any]]) -> str:
     """Create a synthetic API catalog markdown-like text for fast listing."""
     lines = [f"## {title} - API Catalog", "", "Method | Path | Summary | Auth | Has cURL", "---|---|---|---|---"]
@@ -209,11 +392,13 @@ def build_catalog_text(title: str, endpoints: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 def detect_intent(question: str) -> str:
-    """Simple intent detector: list_apis | get_payload | find_curl | generate_curl | other."""
+    """Simple intent detector: list_apis | get_payload | find_curl | generate_curl | count_apis | list_base_urls | other."""
     q = question.lower()
     if any(sig in q for sig in [
-        "list apis", "list endpoints", "all apis", "available apis", "available endpoints", "api list", "endpoints list"
-    ]):
+        "list apis", "list endpoints", "list api endpoints", "all apis", "available apis", "available endpoints", "api list", "endpoints list"
+    ]) or (
+        ("endpoint" in q or "endpoints" in q) and any(tok in q for tok in ["list", "show", "display", "enumerate"]) 
+    ):
         return "list_apis"
     if any(sig in q for sig in [
         "payload", "request body", "request schema", "response schema", "response body", "fields required", "parameters"
@@ -222,9 +407,14 @@ def detect_intent(question: str) -> str:
     if "curl" in q:
         if any(sig in q for sig in ["generate", "create", "make", "build", "write"]):
             return "generate_curl"
-        if any(sig in q for sig in ["find", "show", "present", "any", "existing", "example", "available"]):
+        if any(sig in q for sig in ["find", "show", "present", "any", "existing", "example", "available", "list"]):
             return "find_curl"
-        return "find_curl"
+        # ambiguous mention of curl → generic
+        return "other"
+    if any(sig in q for sig in ["how many apis", "count apis", "number of apis", "api count", "endpoint count"]):
+        return "count_apis"
+    if any(sig in q for sig in ["base url", "base urls", "list base urls", "api url", "api urls"]):
+        return "list_base_urls"
     return "other"
 
 def parse_explicit_endpoint(question: str) -> Optional[Dict[str, str]]:
@@ -249,7 +439,7 @@ def _extract_curl_blocks_from_text(text: str) -> List[Dict[str, Any]]:
             results.append({"title": "cURL example", "code": snippet})
     return results
 
-def _query_weaviate_for_curl(method: Optional[str], endpoint: Optional[str], limit: int = 5) -> List[Dict[str, Any]]:
+def _query_weaviate_for_curl(method: Optional[str], endpoint: Optional[str], limit: int = 20) -> List[Dict[str, Any]]:
     """Retrieve documents from Weaviate likely containing cURL examples; optionally filter by endpoint/method.
     Returns list of {title, section_path, code} entries.
     """
@@ -260,13 +450,15 @@ def _query_weaviate_for_curl(method: Optional[str], endpoint: Optional[str], lim
         props = ["page_content", "title", "section_path", "endpoint", "http_method"]
         query = weaviate_client_instance.query.get(cls, props).with_limit(limit)
         operands: List[Dict[str, Any]] = []
+        # Always filter for objects likely containing cURL text
+        operands.append({"path": ["page_content"], "operator": "Like", "valueString": "*curl*"})
         if endpoint:
             operands.append({"path": ["endpoint"], "operator": "Equal", "valueText": endpoint})
         if method:
             operands.append({"path": ["http_method"], "operator": "Equal", "valueText": method})
         if len(operands) == 1:
             query = query.with_where(operands[0])
-        elif len(operands) > 1:
+        else:
             query = query.with_where({"operator": "And", "operands": operands})
         result = query.do()
         objs = result.get("data", {}).get("Get", {}).get(cls, []) if isinstance(result, dict) else []
@@ -288,7 +480,169 @@ def _query_weaviate_for_curl(method: Optional[str], endpoint: Optional[str], lim
         print(f"DEBUG: _query_weaviate_for_curl error: {err}")
         return []
 
-def _guess_headers_for_endpoint(method: str, endpoint: str) -> Dict[str, str]:
+def _count_curl_examples_weaviate(method: Optional[str], endpoint: Optional[str], keyword_terms: Optional[List[str]] = None) -> Optional[int]:
+    """Return exact count of Weaviate objects that likely contain cURL, optionally filtered.
+    This counts chunks (objects), not individual code blocks. Use only for filtered counts.
+    """
+    try:
+        if 'weaviate_client_instance' not in globals() or weaviate_client_instance is None:
+            return None
+        cls = weaviate_index_name if 'weaviate_index_name' in globals() and weaviate_index_name else WEAVIATE_INDEX_NAME
+        where_operands: List[Dict[str, Any]] = [
+            {"path": ["page_content"], "operator": "Like", "valueString": "*curl*"}
+        ]
+        if endpoint:
+            where_operands.append({"path": ["endpoint"], "operator": "Equal", "valueText": endpoint})
+        if method:
+            where_operands.append({"path": ["http_method"], "operator": "Equal", "valueText": method})
+        if keyword_terms:
+            for term in keyword_terms:
+                like_val = f"*{term}*"
+                where_operands.append({"path": ["page_content"], "operator": "Like", "valueString": like_val})
+        if len(where_operands) == 1:
+            where_clause = where_operands[0]
+        else:
+            where_clause = {"operator": "And", "operands": where_operands}
+        agg = (
+            weaviate_client_instance
+            .query
+            .aggregate(cls)
+            .with_where(where_clause)
+            .with_meta_count()
+            .do()
+        )
+        count = (
+            agg.get("data", {})
+               .get("Aggregate", {})
+               .get(cls, [{}])[0]
+               .get("meta", {})
+               .get("count")
+        )
+        return int(count) if count is not None else None
+    except Exception as err:
+        print(f"DEBUG: _count_curl_examples_weaviate error: {err}")
+        return None
+
+def _filter_curl_snippets_by_terms(snippets: List[Dict[str, Any]], method: Optional[str], endpoint: Optional[str], keyword_terms: Optional[List[str]]) -> List[Dict[str, Any]]:
+    filtered: List[Dict[str, Any]] = []
+    terms = [t.lower() for t in (keyword_terms or [])]
+    for s in snippets:
+        code = (s.get("code") or "").lower()
+        ok = True
+        if method and f"-x {method.lower()}" not in code and method.lower() not in code:
+            ok = False
+        if ok and endpoint and endpoint.lower() not in code:
+            ok = False
+        if ok and terms:
+            if not any(t in code for t in terms):
+                ok = False
+        if ok:
+            filtered.append(s)
+    return filtered or snippets
+
+def _llm_filter_curl_snippets(question: str, snippets: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
+    try:
+        if not snippets:
+            return []
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return snippets[:top_k]
+        llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0, max_tokens=300)
+        joined = "\n\n".join([f"### SNIPPET {i+1}\n{snip.get('code','')}" for i, snip in enumerate(snippets[:50])])
+        prompt = (
+            "Rank the following cURL snippets by relevance to the QUESTION. Return JSON {\"indices\":[int...]}.\n\n"
+            f"QUESTION: {question}\n\nSNIPPETS:\n{joined}\n"
+        )
+        resp = llm.invoke(prompt)
+        text = getattr(resp, 'content', None) or (resp if isinstance(resp, str) else str(resp))
+        m = re.search(r"\{[\s\S]*\}", text)
+        data = json.loads(m.group(0)) if m else json.loads(text)
+        idxs = data.get("indices") if isinstance(data, dict) else None
+        if isinstance(idxs, list):
+            ranked = []
+            for i in idxs:
+                try:
+                    ranked.append(snippets[i-1])
+                except Exception:
+                    pass
+            return ranked[:top_k] if ranked else snippets[:top_k]
+        return snippets[:top_k]
+    except Exception as err:
+        print(f"DEBUG: _llm_filter_curl_snippets error: {err}")
+        return snippets[:top_k]
+
+def _build_where_clause(method: Optional[str], endpoint: Optional[str]) -> Optional[Dict[str, Any]]:
+    operands: List[Dict[str, Any]] = []
+    if endpoint:
+        operands.append({"path": ["endpoint"], "operator": "Equal", "valueText": endpoint})
+    if method:
+        operands.append({"path": ["http_method"], "operator": "Equal", "valueText": method})
+    if not operands:
+        return None
+    if len(operands) == 1:
+        return operands[0]
+    return {"operator": "And", "operands": operands}
+
+def hybrid_retrieve_documents(user_input: str, method: Optional[str], endpoint: Optional[str], k_candidates: int = 24, k_final: int = 8, alpha: float = 0.5) -> List[Document]:
+    """Hybrid retrieval (BM25 + vector) with optional endpoint/method filter, plus reranking.
+    Returns a list of langchain Documents.
+    """
+    try:
+        if 'weaviate_client_instance' not in globals() or weaviate_client_instance is None:
+            return []
+        # Embed query
+        query_vector = CohereEmbeddings(model="embed-english-v3.0").embed_query(user_input)
+        cls = weaviate_index_name if 'weaviate_index_name' in globals() and weaviate_index_name else WEAVIATE_INDEX_NAME
+        props = ["page_content", "title", "section_path", "endpoint", "http_method", "section"]
+        qb = weaviate_client_instance.query.get(cls, props)
+        where_clause = _build_where_clause(method, endpoint)
+        if where_clause:
+            qb = qb.with_where(where_clause)
+        result = (
+            qb.with_hybrid(query=user_input, alpha=alpha, vector=query_vector)
+              .with_limit(k_candidates)
+              .do()
+        )
+        objs = result.get("data", {}).get("Get", {}).get(cls, []) if isinstance(result, dict) else []
+        docs: List[Document] = []
+        for obj in objs:
+            text = obj.get("page_content") or ""
+            meta = {
+                "title": obj.get("title"),
+                "section_path": obj.get("section_path"),
+                "endpoint": obj.get("endpoint"),
+                "http_method": obj.get("http_method"),
+                "section": obj.get("section"),
+            }
+            docs.append(Document(page_content=text, metadata=meta))
+        # Rerank with Cohere if available
+        try:
+            api_key = os.getenv("COHERE_API_KEY")
+            if api_key and len(docs) > 1:
+                import cohere  # type: ignore
+                client = cohere.Client(api_key)
+                rer = client.rerank(model="rerank-english-v3.0", query=user_input, documents=[d.page_content for d in docs])
+                idx_to_score = {r.index: float(getattr(r, "relevance_score", 0.0)) for r in rer.results}
+                ranked = sorted(enumerate(docs), key=lambda t: idx_to_score.get(t[0], 0.0), reverse=True)
+                docs = [d for _, d in ranked[:k_final]]
+            else:
+                docs = docs[:k_final]
+        except Exception as rerank_err:
+            print(f"DEBUG: rerank failed: {rerank_err}")
+            docs = docs[:k_final]
+        return docs
+    except Exception as err:
+        print(f"DEBUG: hybrid_retrieve_documents error: {err}")
+        return []
+
+def _doc_mentions_x_api_key() -> bool:
+    try:
+        if not raw_document_text:
+            return False
+        return bool(re.search(r"(?i)\bx-api-key\b", raw_document_text))
+    except Exception:
+        return False
+
+def _guess_headers_for_endpoint(method: str, endpoint: str, api_version: Optional[str] = None) -> Dict[str, str]:
     """Minimal headers based on extracted metadata."""
     headers: Dict[str, str] = {}
     for e in extracted_endpoints:
@@ -296,8 +650,13 @@ def _guess_headers_for_endpoint(method: str, endpoint: str) -> Dict[str, str]:
             if str(e.get("auth", "")).lower() == "bearer":
                 headers["Authorization"] = "Bearer <API_TOKEN>"
             break
+    # Common header across docs
+    if _doc_mentions_x_api_key():
+        headers["x-api-key"] = "<API_KEY>"
     if method in {"POST", "PUT", "PATCH"}:
         headers["Content-Type"] = "application/json"
+    if api_version:
+        headers["X-Api-Version"] = api_version
     return headers
 
 def _format_curl(method: str, url: str, headers: Dict[str, str], body: Optional[str]) -> str:
@@ -308,22 +667,29 @@ def _format_curl(method: str, url: str, headers: Dict[str, str], body: Optional[
         parts.append(f"  -d '{body.strip()}'")
     return " \\\n".join(parts)
 
-def _synthesize_curl(method: str, endpoint: str, example_body: Optional[str] = None) -> str:
+def _synthesize_curl(method: str, endpoint: str, example_body: Optional[str] = None, api_version: Optional[str] = None) -> str:
     base = detected_base_url or "<BASE URL>"
     url = f"{base.rstrip('/')}{endpoint}"
-    headers = _guess_headers_for_endpoint(method, endpoint)
+    headers = _guess_headers_for_endpoint(method, endpoint, api_version=api_version)
     return _format_curl(method, url, headers, example_body)
 
-def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_synthesis: bool = False) -> Dict[str, Any]:
+def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_synthesis: bool = False, max_examples: int = 10, keyword_terms: Optional[List[str]] = None, api_version: Optional[str] = None) -> Dict[str, Any]:
     """Find cURL in docs stored in Weaviate. If none and allow_synthesis=True, synthesize one.
 
     Returns a structured content dict with code_blocks and notes on success.
     Returns an error dict if not found and synthesis not allowed or method/path missing.
     """
     # 1) Find examples in docs
-    examples = _query_weaviate_for_curl(method, endpoint, limit=3)
+    examples = _query_weaviate_for_curl(method, endpoint, limit=max_examples)
+    # Fallback: scan raw docs if needed
+    if not examples and raw_document_text:
+        raw_examples = _extract_curl_blocks_from_text(raw_document_text)
+        examples = _filter_curl_snippets_by_terms(raw_examples, method, endpoint, keyword_terms)[:max_examples]
     if examples:
-        code_blocks = [{"language": "bash", "title": e.get("title") or "cURL example", "code": e["code"]} for e in examples]
+        # Keyword filter and LLM re-ranking for precision
+        filtered = _filter_curl_snippets_by_terms(examples, method, endpoint, keyword_terms)
+        ranked = _llm_filter_curl_snippets(" ".join([str(method or ""), str(endpoint or ""), " ".join(keyword_terms or [])]).strip(), filtered, top_k=max_examples)
+        code_blocks = [{"language": "bash", "title": e.get("title") or "cURL example", "code": e.get("code", "")} for e in ranked]
         notes = [f"Source section: {e.get('section_path','')}" for e in examples if e.get('section_path')]
         return {
             "title": "cURL examples",
@@ -346,7 +712,7 @@ def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_syn
 
     # 3) Synthesize only when explicitly allowed
     if method and endpoint:
-        curl_cmd = _synthesize_curl(method, endpoint, example_body=None)
+        curl_cmd = _synthesize_curl(method, endpoint, example_body=None, api_version=api_version)
         return {
             "title": "cURL (synthesized)",
             "description": "Synthesized from documentation metadata. Replace placeholders before use.",
@@ -360,7 +726,7 @@ def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_syn
 
     return {"type": "error", "errors": ["Method and endpoint are required to generate a cURL command."]}
 
-def generate_curls_for_all_endpoints() -> Dict[str, Any]:
+def generate_curls_for_all_endpoints(api_version: Optional[str] = None) -> Dict[str, Any]:
     """Generate or retrieve cURLs for all extracted endpoints in one response."""
     code_blocks: List[Dict[str, str]] = []
     notes: List[str] = []
@@ -369,7 +735,7 @@ def generate_curls_for_all_endpoints() -> Dict[str, Any]:
     for e in extracted_endpoints:
         method = e.get("http_method")
         endpoint = e.get("endpoint")
-        res = get_curl_from_docs(method, endpoint, allow_synthesis=True)
+        res = get_curl_from_docs(method, endpoint, allow_synthesis=True, api_version=api_version)
         if isinstance(res, dict):
             for cb in res.get("code_blocks", []) or []:
                 # Ensure title shows method + path
@@ -393,6 +759,409 @@ def generate_curls_for_all_endpoints() -> Dict[str, Any]:
         "notes": notes,
         "warnings": []
     }
+
+def generate_curl_with_claude(method: str, endpoint: str, question: str = "", additional_context: str = "") -> Dict[str, Any]:
+    """
+    Generate a properly structured cURL command using Claude.
+    This function creates ready-to-copy cURL commands with proper formatting.
+    
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, etc.)
+        endpoint: API endpoint path
+        question: User's original question for context
+        additional_context: Any additional context from documentation
+        
+    Returns:
+        Dict containing the generated cURL and metadata
+    """
+    try:
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return {
+                "success": False,
+                "error": "Claude API key not available",
+                "curl": None
+            }
+        
+                # Get base URL from detected documentation or use placeholder
+        try:
+            base_url = detected_base_url or "<BASE_URL>"
+        except NameError:
+            base_url = "<BASE_URL>"
+        
+        # Build comprehensive prompt for Claude
+        prompt = f"""
+You are an expert API documentation specialist. Generate a properly formatted cURL command for the following API endpoint.
+
+HTTP Method: {method}
+Endpoint: {endpoint}
+Base URL: {base_url}
+
+User Question: {question}
+
+Additional Context: {additional_context}
+
+Requirements:
+1. Create a cURL command that users can directly copy and paste
+2. Use proper cURL syntax with line breaks for readability
+3. Include appropriate headers based on the method and endpoint
+4. Use the actual base URL if provided, otherwise use <BASE_URL> placeholder
+5. Include proper placeholders for dynamic values (e.g., <API_KEY>, <USER_ID>)
+6. Add comments explaining what each part does
+7. Ensure the cURL is properly escaped and formatted
+
+Generate ONLY the cURL command with comments, no other text or explanations.
+Format it as a clean, copy-paste ready command.
+"""
+
+        # Use Claude to generate the cURL
+        llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0, max_tokens=500)
+        response = llm.invoke(prompt)
+        
+        # Extract the generated cURL
+        generated_curl = getattr(response, 'content', None) or str(response)
+        
+        # Clean up the response - remove any markdown formatting
+        generated_curl = re.sub(r'^```bash\s*', '', generated_curl)
+        generated_curl = re.sub(r'^```curl\s*', '', generated_curl)
+        generated_curl = re.sub(r'```\s*$', '', generated_curl)
+        generated_curl = generated_curl.strip()
+        
+        # Ensure it starts with 'curl'
+        if not generated_curl.startswith('curl'):
+            # If Claude didn't generate proper cURL, create a basic one
+            generated_curl = f"""curl -X {method} \\
+  -H 'Content-Type: application/json' \\
+  -H 'Authorization: Bearer <API_TOKEN>' \\
+  {base_url}{endpoint}"""
+        
+        # Add common headers based on method
+        if method in ["POST", "PUT", "PATCH"]:
+            if "Content-Type: application/json" not in generated_curl:
+                generated_curl = generated_curl.replace(
+                    f"{base_url}{endpoint}",
+                    f"-H 'Content-Type: application/json' \\\n  {base_url}{endpoint}"
+                )
+        
+        # Add version header if endpoint suggests versioning
+        if re.search(r'/v\d+', endpoint):
+            version_match = re.search(r'/v(\d+)', endpoint)
+            if version_match:
+                version = f"v{version_match.group(1)}"
+                if f"X-Api-Version: {version}" not in generated_curl:
+                    generated_curl = generated_curl.replace(
+                        f"{base_url}{endpoint}",
+                        f"-H 'X-Api-Version: {version}' \\\n  {base_url}{endpoint}"
+                )
+        
+        # Add API key header if not present
+        if "x-api-key" not in generated_curl.lower() and "api_key" not in generated_curl.lower():
+            generated_curl = generated_curl.replace(
+                f"{base_url}{endpoint}",
+                f"-H 'x-api-key: <API_KEY>' \\\n  {base_url}{endpoint}"
+            )
+        
+        # Add sample data for POST/PUT/PATCH if not present
+        if method in ["POST", "PUT", "PATCH"] and "-d" not in generated_curl:
+            sample_data = {
+                "POST": {"name": "Sample Name", "description": "Sample Description"},
+                "PUT": {"id": "<ID>", "name": "Updated Name"},
+                "PATCH": {"id": "<ID>", "status": "updated"}
+            }
+            
+            data_json = json.dumps(sample_data.get(method, {}), indent=2)
+            generated_curl = generated_curl.replace(
+                f"{base_url}{endpoint}",
+                f"-d '{data_json}' \\\n  {base_url}{endpoint}"
+            )
+        
+        # Format the cURL for better readability
+        formatted_curl = generated_curl.replace(" \\", " \\\n  ")
+        
+        return {
+            "success": True,
+            "curl": formatted_curl,
+            "method": method,
+            "endpoint": endpoint,
+            "base_url": base_url,
+            "placeholders": {
+                "base_url": base_url if base_url != "<BASE_URL>" else "Base URL from your environment",
+                "api_key": "Your API key",
+                "api_token": "Your Bearer token",
+                "user_id": "User ID or identifier",
+                "id": "Resource ID"
+            },
+            "copy_ready": True,
+            "generated_by": "Claude AI"
+        }
+        
+    except Exception as e:
+        print(f"Error generating cURL with Claude: {e}")
+        # Fallback to basic cURL generation
+        try:
+            base_url = detected_base_url or "<BASE_URL>"
+        except NameError:
+            base_url = "<BASE_URL>"
+        fallback_curl = f"""curl -X {method} \\
+  -H 'Content-Type: application/json' \\
+  -H 'Authorization: Bearer <API_TOKEN>' \\
+  -H 'x-api-key: <API_KEY>' \\
+  {base_url}{endpoint}"""
+        
+        if method in ["POST", "PUT", "PATCH"]:
+            fallback_curl += f""" \\
+  -d '{{
+    "sample": "data"
+  }}'"""
+        
+        return {
+            "success": False,
+            "error": str(e),
+            "curl": fallback_curl,
+            "method": method,
+            "endpoint": endpoint,
+            "base_url": base_url,
+            "fallback": True
+        }
+
+def generate_curl_for_all_endpoints() -> Dict[str, Any]:
+    """
+    Generate cURL commands for all available endpoints in the documentation.
+    Returns a comprehensive list of cURL commands for each endpoint.
+    """
+    try:
+        try:
+            if not extracted_endpoints:
+                return {
+                    "success": False,
+                    "error": "No endpoints found in documentation",
+                    "curls": []
+                }
+        except NameError:
+            return {
+                "success": False,
+                "error": "No endpoints found in documentation",
+                "curls": []
+            }
+        
+        all_curls = []
+        try:
+            base_url = detected_base_url or "<BASE_URL>"
+        except NameError:
+            base_url = "<BASE_URL>"
+        
+        try:
+            for endpoint_info in extracted_endpoints:
+                method = endpoint_info.get("http_method", "GET")
+                endpoint = endpoint_info.get("endpoint", "")
+                summary = endpoint_info.get("summary", "")
+                
+                if not endpoint:
+                    continue
+                
+                # Generate cURL for this endpoint
+                curl_result = generate_curl_with_claude(
+                    method=method,
+                    endpoint=endpoint,
+                    question=f"Generate cURL for {method} {endpoint}",
+                    additional_context=summary
+                )
+                
+                if curl_result.get("success"):
+                    all_curls.append({
+                        "method": method,
+                        "endpoint": endpoint,
+                        "summary": summary,
+                        "curl": curl_result["curl"],
+                        "placeholders": curl_result.get("placeholders", {}),
+                        "copy_ready": True
+                    })
+                else:
+                    # Use fallback cURL
+                    all_curls.append({
+                        "method": method,
+                        "endpoint": endpoint,
+                        "summary": summary,
+                        "curl": curl_result["curl"],
+                        "fallback": True,
+                        "copy_ready": True
+                    })
+        except NameError:
+            return {
+                "success": False,
+                "error": "No endpoints found in documentation",
+                "curls": []
+            }
+        
+        return {
+            "success": True,
+            "total_endpoints": len(all_curls),
+            "base_url": base_url,
+            "curls": all_curls,
+            "instructions": "Copy any cURL command below and replace placeholders with actual values",
+            "placeholders": {
+                "base_url": base_url if base_url != "<BASE_URL>" else "Your API base URL",
+                "api_key": "Your API key",
+                "api_token": "Your Bearer token"
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error generating cURLs for all endpoints: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "curls": []
+        }
+
+def build_endpoint_candidates_structured(limit: int = 10) -> Dict[str, Any]:
+    """Return a structured table of available endpoints to help user specify target."""
+    headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
+    rows: List[List[str]] = []
+    for e in extracted_endpoints[:limit]:
+        rows.append([
+            e.get("http_method", ""),
+            e.get("endpoint", ""),
+            e.get("summary", ""),
+            e.get("auth", "unknown"),
+            str(e.get("has_curl", False))
+        ])
+    return {
+        "title": "Endpoint candidates",
+        "description": "Specify method and path (e.g., 'POST /folders') to target an endpoint.",
+        "code_blocks": [],
+        "tables": [{"headers": headers, "rows": rows}],
+        "lists": [],
+        "links": [],
+        "notes": ["Grounded in extracted documentation."],
+        "warnings": []
+    }
+
+def handle_curl_query(question: str) -> Dict[str, Any]:
+    """Unified cURL handler covering: find, find all, generate, generate all, count.
+    Returns a structured content dict or a typed error.
+    """
+    q = question.lower()
+    explicit = parse_explicit_endpoint(question)
+    method = explicit.get("http_method") if explicit else None
+    endpoint = explicit.get("endpoint") if explicit else None
+    want_all = any(tok in q for tok in ["all", "each", "every"])
+    is_count = any(tok in q for tok in ["how many", "count", "number of"])
+    is_generate = any(tok in q for tok in ["generate", "create", "build", "write", "make"]) and "curl" in q
+    is_find = ("curl" in q) and (any(tok in q for tok in ["find", "show", "present", "list", "available", "examples"]) or not is_generate)
+    # Extract keyword terms (e.g., 'templates') and api version hints
+    crit = _extract_method_and_terms(question)
+    keyword_terms = list(crit.get("terms", []))
+    ver_match = re.search(r"(?i)\bv(\d)\b|version\s*(\d)", question)
+    api_version = None
+    if ver_match:
+        api_version = ver_match.group(1) or ver_match.group(2)
+
+    # Count cURLs present
+    if is_count:
+        # Global exact count from raw docs; filtered counts via Weaviate aggregate
+        if not method and not endpoint and not keyword_terms:
+            total = curl_examples_total_count
+        else:
+            agg_count = _count_curl_examples_weaviate(method, endpoint, keyword_terms=keyword_terms)
+            total = agg_count if isinstance(agg_count, int) else 0
+        return {
+            "title": "cURL examples count",
+            "description": "Count of cURL examples matching your query.",
+            "code_blocks": [],
+            "tables": [],
+            "lists": [],
+            "links": [],
+            "notes": [
+                f"Scope: {'all' if not method and not endpoint else (method or '') + ' ' + (endpoint or '')}",
+            ],
+            "warnings": [],
+            "values": {"curl_examples_count": total}
+        }
+
+    # Find all existing cURLs in docs (no synthesis)
+    # If the user says 'list curls' or 'any curls present' without a specific endpoint,
+    # return all discovered examples rather than endpoint candidates.
+    if is_find and (want_all or not (method or endpoint)):
+        return get_curl_from_docs(None, None, allow_synthesis=False, max_examples=200, keyword_terms=keyword_terms)
+
+    # Find cURL for a specific endpoint (no synthesis)
+    if is_find and (method or endpoint):
+        return get_curl_from_docs(method, endpoint, allow_synthesis=False, max_examples=20, keyword_terms=keyword_terms)
+
+    # Generate all cURLs (synthesis allowed) using Claude
+    if is_generate and want_all:
+        # Use Claude to generate cURLs for all endpoints
+        all_curls_result = generate_curl_for_all_endpoints()
+        
+        if all_curls_result.get("success"):
+            code_blocks = []
+            for curl_info in all_curls_result.get("curls", []):
+                code_blocks.append({
+                    "language": "bash",
+                    "title": f"{curl_info['method']} {curl_info['endpoint']}",
+                    "code": curl_info["curl"]
+                })
+            
+            return {
+                "title": "Generated cURLs for All Endpoints",
+                "description": f"AI-generated cURL commands for {all_curls_result.get('total_endpoints', 0)} endpoints. Ready for copy-paste.",
+                "code_blocks": code_blocks,
+                "tables": [],
+                "lists": [],
+                "links": [],
+                "notes": [
+                    f"Total endpoints: {all_curls_result.get('total_endpoints', 0)}",
+                    f"Base URL: {all_curls_result.get('base_url', '<BASE_URL>')}",
+                    "Instructions: Copy any cURL command below and replace placeholders with actual values",
+                    "Placeholders to replace:",
+                    *[f"- {k}: {v}" for k, v in all_curls_result.get('placeholders', {}).items()]
+                ],
+                "warnings": ["These are AI-generated cURLs. Verify against your API documentation."]
+            }
+        else:
+            # Fallback to existing method
+            return generate_curls_for_all_endpoints(api_version=api_version)
+
+    # Generate for a specific endpoint using Claude
+    if is_generate and (method and endpoint):
+        # Use Claude to generate a comprehensive cURL
+        curl_result = generate_curl_with_claude(
+            method=method,
+            endpoint=endpoint,
+            question=question,
+            additional_context=f"Generate cURL for {method} {endpoint}"
+        )
+        
+        if curl_result.get("success"):
+            return {
+                "title": f"Generated cURL for {method} {endpoint}",
+                "description": "AI-generated cURL command ready for copy-paste. Replace placeholders with actual values.",
+                "code_blocks": [{
+                    "language": "bash",
+                    "title": f"{method} {endpoint}",
+                    "code": curl_result["curl"]
+                }],
+                "tables": [],
+                "lists": [],
+                "links": [],
+                "notes": [
+                    f"Generated by: {curl_result.get('generated_by', 'Claude AI')}",
+                    f"Base URL: {curl_result.get('base_url', '<BASE_URL>')}",
+                    "Placeholders to replace:",
+                    *[f"- {k}: {v}" for k, v in curl_result.get('placeholders', {}).items()]
+                ],
+                "warnings": ["This is an AI-generated cURL. Verify against your API documentation."]
+            }
+        else:
+            # Fallback to existing method
+            return get_curl_from_docs(method, endpoint, allow_synthesis=True, keyword_terms=keyword_terms, api_version=api_version)
+
+    # If user wants to generate cURL but didn't specify endpoint, list candidates
+    if "curl" in q and is_generate and not (method and endpoint):
+        return build_endpoint_candidates_structured(limit=15)
+
+    # Fallback to not-a-curl question
+    return {"type": "error", "errors": ["This request is not recognized as a cURL-related query."]}
 
 def detect_base_url_from_text(text: str) -> Optional[str]:
     """Heuristically detect a base URL like https://api.example.com or https://host/v1."""
@@ -580,6 +1349,9 @@ def process_documentation(content: str, title: str = "API Documentation") -> dic
 
     # Strip yaml front matter
     raw = re.sub(r"^---\n.*?\n---\n", "", content, flags=re.DOTALL)
+    # Keep a copy of raw text for cURL fallback/LLM filters
+    global raw_document_text
+    raw_document_text = raw
 
     # Split using Markdown headers
     headers_to_split_on = [("#","h1"),("##","h2"),("###","h3"),("####","h4")]
@@ -613,13 +1385,77 @@ def process_documentation(content: str, title: str = "API Documentation") -> dic
     # Defer vector store creation until after we assemble all documents
     vector_store = None
 
+    # Ensure schema exists with cosine similarity (no auto-vectorizer)
+    try:
+        existing = client.schema.get()
+        classes = existing.get("classes", []) if isinstance(existing, dict) else []
+        present = any(cls.get("class") == index_name for cls in classes)
+        if not present:
+            client.schema.create_class({
+                "class": index_name,
+                "description": "RAG API docs chunks",
+                "vectorizer": "none",
+                "vectorIndexType": "hnsw",
+                "vectorIndexConfig": {"distance": "cosine"},
+                "properties": [
+                    {"name": "page_content", "dataType": ["text"]},
+                    {"name": "title", "dataType": ["text"]},
+                    {"name": "section_path", "dataType": ["text"]},
+                    {"name": "endpoint", "dataType": ["text"]},
+                    {"name": "http_method", "dataType": ["text"]},
+                    {"name": "base_url", "dataType": ["text"]},
+                    {"name": "auth", "dataType": ["text"]},
+                    {"name": "tags", "dataType": ["text[]"]},
+                    {"name": "has_curl", "dataType": ["boolean"]},
+                    {"name": "is_catalog", "dataType": ["boolean"]},
+                    {"name": "is_example", "dataType": ["boolean"]},
+                    {"name": "is_param_table", "dataType": ["boolean"]},
+                    {"name": "is_structured", "dataType": ["boolean"]},
+                    {"name": "section", "dataType": ["text"]},
+                    {"name": "source", "dataType": ["text"]}
+                ]
+            })
+    except Exception as err:
+        print(f"DEBUG: ensure schema error: {err}")
+
     # Extract endpoints, base URL and build a synthetic catalog
     global extracted_endpoints, api_catalog_text, detected_base_url
-    extracted_endpoints = extract_endpoints_from_text(raw)
+    # Prefer OpenAPI structured parsing if available
+    structured_eps = attempt_parse_openapi(raw)
+    text_eps = extract_endpoints_from_text(raw)
+    # LLM-assisted recall pass with validation
+    llm_eps_raw = _llm_recall_endpoints(raw)
+    llm_eps_validated: List[Dict[str, Any]] = []
+    for e in llm_eps_raw:
+        m = e.get("http_method")
+        p = e.get("endpoint")
+        if not m or not p:
+            continue
+        if _validate_endpoint_presence(raw, m, p):
+            llm_eps_validated.append(e)
+    # Merge unique endpoints from structured, text, and validated LLM recall
+    merged: Dict[str, Dict[str, Any]] = {}
+    for e in structured_eps + text_eps + llm_eps_validated:
+        key = f"{e.get('http_method')} {e.get('endpoint')}"
+        if key not in merged:
+            merged[key] = e
+    extracted_endpoints = list(merged.values())
     api_catalog_text = build_catalog_text(title, extracted_endpoints) if extracted_endpoints else None
     detected_base_url = detect_base_url_from_text(raw)
+    # Collect all base URLs for list_base_urls
+    try:
+        global base_urls_detected
+        base_urls_detected = extract_all_base_urls(raw)
+    except Exception:
+        base_urls_detected = []
+    # Precompute total cURL example count from raw docs for exact global counts
+    try:
+        global curl_examples_total_count
+        curl_examples_total_count = len(_extract_curl_blocks_from_text(raw))
+    except Exception:
+        curl_examples_total_count = 0
 
-    # Build Documents for endpoints and catalog
+    # Build Documents for endpoints and catalog (semantic chunking: one endpoint per chunk)
     endpoint_docs: List[Document] = []
     for e in extracted_endpoints:
         content_lines = [
@@ -635,12 +1471,31 @@ def process_documentation(content: str, title: str = "API Documentation") -> dic
                 "section_path": f"API > {e['http_method']} {e['endpoint']}",
                 "endpoint": e["endpoint"],
                 "http_method": e["http_method"],
+                "base_url": detected_base_url,
                 "auth": e.get("auth", "unknown"),
                 "has_curl": e.get("has_curl", False),
                 "is_catalog": False,
+                "tags": e.get("tags", []),
+                "section": "endpoint",
             }
         )
         endpoint_docs.append(endpoint_doc)
+
+        # Hybrid: also store structured JSON as a separate doc for deterministic lookups
+        structured = build_structured_endpoint_json(detected_base_url, e)
+        endpoint_docs.append(Document(
+            page_content=json.dumps(structured, ensure_ascii=False),
+            metadata={
+                "source": title,
+                "title": f"{e['http_method']} {e['endpoint']} (structured)",
+                "section_path": f"API > {e['http_method']} {e['endpoint']} > structured",
+                "endpoint": e["endpoint"],
+                "http_method": e["http_method"],
+                "base_url": detected_base_url,
+                "is_structured": True,
+                "section": "structured",
+            }
+        ))
 
     catalog_docs: List[Document] = []
     if api_catalog_text:
@@ -782,11 +1637,14 @@ Answer:"""
         explicit = parse_explicit_endpoint(user_input)
         try:
             if explicit:
-                # Narrow the retriever search by appending method/path tokens
-                biased_query = f"{explicit['http_method']} {explicit['endpoint']}\n\n{user_input}"
-                docs = retriever.invoke(biased_query)
+                docs = hybrid_retrieve_documents(user_input, explicit.get("http_method"), explicit.get("endpoint"), k_candidates=24, k_final=8, alpha=0.5)
+                if not docs:
+                    # fallback to retriever
+                    docs = retriever.invoke(f"{explicit['http_method']} {explicit['endpoint']}\n\n{user_input}")
             else:
-                docs = retriever.invoke(user_input)
+                docs = hybrid_retrieve_documents(user_input, None, None, k_candidates=24, k_final=8, alpha=0.5)
+                if not docs:
+                    docs = retriever.invoke(user_input)
         except Exception as retrieval_error:
             print(f"DEBUG: retriever.invoke error: {retrieval_error}")
             docs = []
@@ -877,7 +1735,7 @@ async def ask_question(request: QuestionRequest):
         
         # Handle list APIs intent directly to ensure proper structured table
         intent_direct = detect_intent(request.question)
-        if intent_direct == "list_apis":
+        if intent_direct in {"list_apis", "count_apis", "list_base_urls"}:
             if not extracted_endpoints:
                 return {
                     "type": "error",
@@ -885,49 +1743,85 @@ async def ask_question(request: QuestionRequest):
                         "No documentation has been processed yet or no endpoints were extracted. Please upload the API documentation first."
                     ]
                 }
-            headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
-            rows: List[List[str]] = []
-            for e in extracted_endpoints:
-                rows.append([
-                    e.get("http_method", ""),
-                    e.get("endpoint", ""),
-                    e.get("summary", ""),
-                    str(e.get("auth", "unknown")),
-                    str(bool(e.get("has_curl", False)))
-                ])
-            structured_content = {
-                "title": "API Catalog",
-                "description": "List of endpoints discovered from the uploaded docs.",
-                "tables": [{"headers": headers, "rows": rows}],
-                "code_blocks": [],
-                "lists": [],
-                "links": [],
-                "notes": [
-                    f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>",
-                    "Grounded in uploaded documentation."
-                ],
-                "warnings": []
-            }
-            memory.chat_memory.add_user_message(request.question)
-            memory.chat_memory.add_ai_message(json.dumps(structured_content))
-            return StructuredResponse(
-                type="table",
-                content=structured_content,
-                memory_count=len(memory.chat_memory.messages)
-            )
+            if intent_direct == "list_apis":
+                headers = ["Method", "Path", "Summary", "Auth", "Has cURL"]
+                rows: List[List[str]] = []
+                filtered_eps = _filter_endpoints_for_query(extracted_endpoints, request.question)
+                for e in filtered_eps:
+                    rows.append([
+                        e.get("http_method", ""),
+                        e.get("endpoint", ""),
+                        e.get("summary", ""),
+                        str(e.get("auth", "unknown")),
+                        str(bool(e.get("has_curl", False)))
+                    ])
+                structured_content = {
+                    "title": "API Catalog",
+                    "description": "List of endpoints discovered from the uploaded docs.",
+                    "tables": [{"headers": headers, "rows": rows}],
+                    "code_blocks": [],
+                    "lists": [],
+                    "links": [],
+                    "notes": [
+                        f"Base URL: {detected_base_url}" if detected_base_url else "Base URL: <BASE URL>",
+                        "Grounded in uploaded documentation."
+                    ],
+                    "warnings": []
+                }
+                memory.chat_memory.add_user_message(request.question)
+                memory.chat_memory.add_ai_message(json.dumps(structured_content))
+                return StructuredResponse(
+                    type="table",
+                    content=structured_content,
+                    memory_count=len(memory.chat_memory.messages)
+                )
+            if intent_direct == "count_apis":
+                filtered_eps = _filter_endpoints_for_query(extracted_endpoints, request.question)
+                distinct = {f"{e.get('http_method','')} {e.get('endpoint','')}" for e in filtered_eps}
+                structured_content = {
+                    "title": "API count",
+                    "description": "Distinct endpoint count (method+path).",
+                    "values": {"api_count": len(distinct)},
+                    "code_blocks": [],
+                    "tables": [],
+                    "lists": [],
+                    "links": [],
+                    "notes": [],
+                    "warnings": []
+                }
+                memory.chat_memory.add_user_message(request.question)
+                memory.chat_memory.add_ai_message(json.dumps(structured_content))
+                return StructuredResponse(
+                    type="simple",
+                    content=structured_content,
+                    memory_count=len(memory.chat_memory.messages)
+                )
+            if intent_direct == "list_base_urls":
+                urls = set(base_urls_detected or [])
+                if detected_base_url:
+                    urls.add(detected_base_url)
+                structured_content = {
+                    "title": "Base URLs",
+                    "description": "Base URL(s) detected in the documentation.",
+                    "lists": [[u for u in urls]] if urls else [],
+                    "code_blocks": [],
+                    "tables": [],
+                    "links": [],
+                    "notes": [],
+                    "warnings": []
+                }
+                memory.chat_memory.add_user_message(request.question)
+                memory.chat_memory.add_ai_message(json.dumps(structured_content))
+                return StructuredResponse(
+                    type="list" if urls else "simple",
+                    content=structured_content,
+                    memory_count=len(memory.chat_memory.messages)
+                )
 
         # Handle cURL intents up-front to avoid LLM reformatting
         intent_now = detect_intent(request.question)
         if intent_now in {"find_curl", "generate_curl"}:
-            explicit = parse_explicit_endpoint(request.question)
-            method = explicit.get("http_method") if explicit else None
-            endpoint = explicit.get("endpoint") if explicit else None
-            allow_synth = intent_now == "generate_curl"
-            # If the user asks for all endpoints’ cURLs
-            if allow_synth and ("all" in request.question.lower() or "each" in request.question.lower()):
-                result_struct = generate_curls_for_all_endpoints()
-            else:
-                result_struct = get_curl_from_docs(method, endpoint, allow_synthesis=allow_synth)
+            result_struct = handle_curl_query(request.question)
             # Save to memory
             memory.chat_memory.add_user_message(request.question)
             memory.chat_memory.add_ai_message(json.dumps(result_struct))
