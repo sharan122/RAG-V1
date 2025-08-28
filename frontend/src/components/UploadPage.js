@@ -38,17 +38,35 @@ function UploadPage() {
 
   const checkVectorDBStatus = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/vector-db-status`);
-      setVectorDBStatus(response.data);
+      const response = await axios.get(`${API_BASE_URL}/docs/status`);
+      // Handle new API response structure
+      const data = response.data;
+      setVectorDBStatus({
+        is_ready: data.vectorstore?.status === "ready" || data.vectorstore?.status === "initialized",
+        documents_count: data.vectorstore?.document_count || 0,
+        db_size_mb: data.vectorstore?.db_size_mb || 0.0,
+        last_updated: data.vectorstore?.last_updated || null
+      });
     } catch (error) {
       console.error('Failed to check vector DB status:', error);
+      // Set default values on error
+      setVectorDBStatus({
+        is_ready: false,
+        documents_count: 0,
+        db_size_mb: 0.0,
+        last_updated: null
+      });
     }
   };
 
   const checkMemoryStatus = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/memory-status`);
-      setMemoryStatus(response.data);
+      const response = await axios.get(`${API_BASE_URL}/memory/health`);
+      setMemoryStatus({
+        active_sessions: response.data.active_sessions || 0,
+        total_memories: response.data.total_messages || 0,
+        memory_size_mb: 0.0 // Not provided by new API
+      });
     } catch (error) {
       console.error('Failed to check memory status:', error);
     }
@@ -66,9 +84,10 @@ function UploadPage() {
     setResult(null);
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/process-documentation`, {
+      const response = await axios.post(`${API_BASE_URL}/docs/process`, {
         content: documentation,
-        title: title
+        title: title,
+        session_id: "default"
       });
 
       setResult(response.data.data);
@@ -82,7 +101,7 @@ function UploadPage() {
 
   const clearVectorDB = async () => {
     try {
-      await axios.post(`${API_BASE_URL}/clear-vector-db`);
+      await axios.post(`${API_BASE_URL}/docs/clear`);
       setResult(null);
       await checkVectorDBStatus();
     } catch (error) {
@@ -92,9 +111,7 @@ function UploadPage() {
 
   const clearAllMemory = async () => {
     try {
-      await axios.post(`${API_BASE_URL}/clear-memory`, {
-        session_id: null // Clear all sessions
-      });
+      await axios.post(`${API_BASE_URL}/memory/clear-all`);
       await checkMemoryStatus();
     } catch (error) {
       setError('Failed to clear memory.');

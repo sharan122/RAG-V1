@@ -144,3 +144,35 @@
   0%, 40% { opacity: 0; transform: translateY(-2px); }
   60%, 100% { opacity: 1; transform: translateY(0); }
 }
+
+/* chat controls */
+.chat-controls {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.streaming-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.streaming-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #0ea5a4;
+  cursor: pointer;
+}
+
+.streaming-toggle span {
+  user-select: none;
+}

@@ -53,6 +53,8 @@ function TableView({ headers = [], rows = [] }) {
 
 function ResponseRenderer({ data }) {
   if (!data) return null;
+  
+  // Handle error responses
   if (data.type === "error") {
     const errs = (data.errors || data.content?.errors) || [];
     return (
@@ -63,6 +65,7 @@ function ResponseRenderer({ data }) {
     );
   }
 
+  // Handle structured responses from new API
   const content = data.content || {};
   const {
     title, description, code_blocks = [], tables = [], lists = [], links = [], notes = [], warnings = []
@@ -133,6 +136,7 @@ function Chat() {
   const [loading, setLoading] = useState(false);
   const [streamMsg, setStreamMsg] = useState(null);
   const [streamSources, setStreamSources] = useState([]);
+  const [useStreaming, setUseStreaming] = useState(false);
   const eventSourceRef = useRef(null);
 
   const handleStream = (question) => {
@@ -142,10 +146,118 @@ function Chat() {
     const userMessage = { role: "user", content: question };
     setHistory((h) => [...h, userMessage]);
 
-    fetch("http://localhost:8000/ask", {
+    if (useStreaming) {
+      // Use streaming endpoint
+      handleStreamingQuestion(question);
+    } else {
+      // Use regular endpoint
+      handleRegularQuestion(question);
+    }
+  };
+
+  const handleStreamingQuestion = (question) => {
+    // Use fetch with streaming instead of EventSource
+    fetch("http://localhost:8000/questions/ask/stream", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, session_id: "default" })
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let streamedResponse = "";
+
+      function readStream() {
+        return reader.read().then(({ done, value }) => {
+          if (done) {
+            // End of stream
+            setStreamMsg(null);
+            setLoading(false);
+            
+            // Add the complete response to history
+            setHistory((h) => [
+              ...h,
+              {
+                role: "bot",
+                data: { type: "simple", content: { description: streamedResponse } },
+                content: streamedResponse,
+                sources: [],
+              },
+            ]);
+            return;
+          }
+
+          // Decode the chunk
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                
+                if (data.data === '[END]') {
+                  // End of stream
+                  setStreamMsg(null);
+                  setLoading(false);
+                  
+                  // Add the complete response to history
+                  setHistory((h) => [
+                    ...h,
+                    {
+                      role: "bot",
+                      data: { type: "simple", content: { description: streamedResponse } },
+                      content: streamedResponse,
+                      sources: [],
+                    },
+                  ]);
+                  return;
+                } else if (data.memory_count) {
+                  // Memory count received
+                  console.log("Memory count:", data.memory_count);
+                } else if (data.data) {
+                  // Character data
+                  streamedResponse += data.data;
+                  setStreamMsg(streamedResponse);
+                }
+              } catch (error) {
+                console.error("Error parsing stream data:", error);
+              }
+            }
+          }
+          
+          // Continue reading
+          return readStream();
+        });
+      }
+
+      return readStream();
+    })
+    .catch(error => {
+      console.error("Stream error:", error);
+      setStreamMsg(null);
+      setLoading(false);
+      
+      setHistory((h) => [
+        ...h,
+        { role: "bot", content: "Error in streaming response." },
+      ]);
+    });
+  };
+
+  const handleRegularQuestion = (question) => {
+    // Use new modular API endpoint
+    fetch("http://localhost:8000/questions/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, session_id: "default" }),
+      body: JSON.stringify({ 
+        question, 
+        session_id: "default" 
+      }),
     })
       .then((res) => res.json())
       .then((data) => {
@@ -154,7 +266,7 @@ function Chat() {
           {
             role: "bot",
             data,
-            content: data.answer || data.content?.description || "",
+            content: data.content?.description || data.content?.title || "",
             sources: data.sources || [],
           },
         ]);
@@ -183,6 +295,19 @@ function Chat() {
   return (
     <div className="chat-root">
       <h2 className="chat-title">RAG Chat</h2>
+      
+      {/* Streaming Toggle */}
+      <div className="chat-controls">
+        <label className="streaming-toggle">
+          <input
+            type="checkbox"
+            checked={useStreaming}
+            onChange={(e) => setUseStreaming(e.target.checked)}
+          />
+          <span>Use Streaming</span>
+        </label>
+      </div>
+      
       <div className="chat-window">
         {history.map((msg, i) => (
           <div
