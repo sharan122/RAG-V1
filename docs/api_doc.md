@@ -3437,4 +3437,6 @@ curl --location --request POST 'https: //api.example.com/admin/file-storage/file
 - `50090`: API Error – Internal Server Error
 
 
+##syllabus  pdf download link
 
+https://docs.uoc.ac.in/website/syllabus/2024-06-22%2017:03:40_syl1852.pdf

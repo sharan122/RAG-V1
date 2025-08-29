@@ -14,9 +14,13 @@ class StructuredContent(BaseModel):
     values: Optional[Dict[str, Any]] = None
 
 class StructuredResponse(BaseModel):
-    """Main response model for structured content."""
-    type: str  # "simple", "table", "list", "explanatory", "values", "error"
-    content: StructuredContent
+    """Main response model for structured content with fixed JSON structure."""
+    short_answers: List[str] = []
+    descriptions: List[str] = []
+    url: List[str] = []
+    curl: List[str] = []
+    values: Dict[str, Any] = {}
+    numbers: Dict[str, Any] = {}
     memory_count: int = 0
 
 class ErrorResponse(BaseModel):

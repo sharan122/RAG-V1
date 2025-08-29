@@ -46,8 +46,38 @@ def create_rag_chain(retriever: Any) -> ConversationalRetrievalChain:
     """Create the RAG chain."""
     llm = create_llm()
     
-    # Create the prompt template
-    question_prompt = "You are an expert API documentation assistant. Answer the user's question based on the provided context."
+    # Read the structured prompt from file
+    try:
+        with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
+            question_prompt = f.read()
+    except FileNotFoundError:
+        # Fallback prompt if file not found
+        question_prompt = """You are an expert API documentation assistant. Answer the user's question based on the provided context.
+
+IMPORTANT: You MUST respond with a JSON object in EXACTLY this format:
+
+{{
+  "short_answers": ["brief answer 1", "brief answer 2"],
+  "descriptions": ["detailed description 1", "detailed description 2"],
+  "url": ["https://example.com/api1", "https://example.com/api2"],
+  "curl": ["curl -X GET 'https://api.example.com/endpoint'", "curl -X POST 'https://api.example.com/endpoint'"],
+  "values": {{"key1": "value1", "key2": "value2"}},
+  "numbers": {{"count": 5, "total": 100}}
+}}
+
+RULES:
+1. Use ONLY these exact keys: short_answers, descriptions, url, curl, values, numbers
+2. Each key should contain an array or object as shown above
+3. If a key has no relevant data, use an empty array [] or empty object {{}}
+4. NEVER nest JSON objects - keep it flat
+5. NEVER add additional keys
+6. ALWAYS return valid JSON that can be parsed
+
+Context: {context}
+
+Question: {question}
+
+Respond with ONLY the JSON object, no additional text."""
     
     # Escape curly braces in the prompt to prevent LangChain template errors
     question_prompt = question_prompt.replace("{", "{{").replace("}", "}}")

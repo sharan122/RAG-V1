@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 import "./Chat.css";
 
 function TypingDots() {
@@ -24,108 +24,141 @@ function CodeBlock({ language = "bash", code = "" }) {
   );
 }
 
-function TableView({ headers = [], rows = [] }) {
-  return (
-    <div className="resp-table-wrap">
-      <table className="resp-table">
-        {headers && headers.length > 0 && (
-          <thead>
-            <tr>
-              {headers.map((h, i) => (
-                <th key={i}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-        )}
-        <tbody>
-          {rows && rows.map((r, i) => (
-            <tr key={i}>
-              {r.map((c, j) => (
-                <td key={j}>{String(c)}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+
 
 function ResponseRenderer({ data }) {
   if (!data) return null;
   
-  // Handle error responses
-  if (data.type === "error") {
-    const errs = (data.errors || data.content?.errors) || [];
-    return (
-      <div className="resp-error">
-        <b>Error</b>
-        <ul>{errs.map((e, i) => (<li key={i}>{e}</li>))}</ul>
-      </div>
-    );
-  }
+  // Helper function to parse JSON strings that might be embedded in descriptions
+  const parseEmbeddedJson = (text) => {
+    if (typeof text === 'string' && text.trim().startsWith('{') && text.trim().endsWith('}')) {
+      try {
+        // Replace single quotes with double quotes for valid JSON
+        const cleanedText = text.replace(/'/g, '"').replace(/\n/g, '\\n');
+        return JSON.parse(cleanedText);
+      } catch (e) {
+        console.log('Failed to parse embedded JSON:', e);
+        return null;
+      }
+    }
+    return null;
+  };
 
-  // Handle structured responses from new API
-  const content = data.content || {};
-  const {
-    title, description, code_blocks = [], tables = [], lists = [], links = [], notes = [], warnings = []
-  } = content;
+  // Helper function to clean up text formatting
+  const cleanText = (text) => {
+    if (typeof text !== 'string') return text;
+    return text
+      .replace(/\\n/g, '\n')
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, '"')
+      .trim();
+  };
+
+  // Extract data from the new response structure
+  let short_answers = data.short_answers || [];
+  let descriptions = data.descriptions || [];
+  let url = data.url || [];
+  let curl = data.curl || [];
+  let values = data.values || {};
+  let numbers = data.numbers || {};
+
+  // Check if descriptions contain embedded JSON (malformed responses)
+  if (descriptions.length > 0 && typeof descriptions[0] === 'string') {
+    const embeddedJson = parseEmbeddedJson(descriptions[0]);
+    if (embeddedJson) {
+      // Use the embedded JSON data instead
+      short_answers = embeddedJson.short_answers || short_answers;
+      descriptions = embeddedJson.descriptions || descriptions;
+      url = embeddedJson.url || url;
+      curl = embeddedJson.curl || curl;
+      values = embeddedJson.values || values;
+      numbers = embeddedJson.numbers || numbers;
+    }
+  }
 
   return (
     <div className="resp-root">
-      {title ? <div className="resp-title">{title}</div> : null}
-      {description ? <div className="resp-desc">{description}</div> : null}
-
-      {tables && tables.length > 0 && (
+      {/* Short Answers */}
+      {short_answers && short_answers.length > 0 && (
         <div className="resp-section">
-          {tables.map((t, i) => (
-            <TableView key={i} headers={t.headers} rows={t.rows} />
-          ))}
+          <h3 className="resp-section-title">Quick Answers</h3>
+          <div className="resp-short-answers">
+            {short_answers.map((answer, i) => (
+              <div key={i} className="resp-short-answer">{cleanText(answer)}</div>
+            ))}
+          </div>
         </div>
       )}
 
-      {code_blocks && code_blocks.length > 0 && (
+      {/* Descriptions */}
+      {descriptions && descriptions.length > 0 && (
         <div className="resp-section">
-          {code_blocks.map((b, i) => (
-            <CodeBlock key={i} language={b.language} code={b.code} />
-          ))}
+          <h3 className="resp-section-title">Detailed Information</h3>
+          <div className="resp-descriptions">
+            {descriptions.map((desc, i) => (
+              <div key={i} className="resp-description">{cleanText(desc)}</div>
+            ))}
+          </div>
         </div>
       )}
 
-      {lists && lists.length > 0 && (
+      {/* URLs */}
+      {url && url.length > 0 && (
         <div className="resp-section">
-          {lists.map((lst, i) => (
-            <ul key={i} className="resp-list">
-              {lst.map((item, j) => (<li key={j}>{item}</li>))}
-            </ul>
-          ))}
+          <h3 className="resp-section-title">Related URLs</h3>
+          <div className="resp-urls">
+            {url.map((link, i) => (
+              <a key={i} href={link} target="_blank" rel="noopener noreferrer" className="resp-url">
+                {link}
+              </a>
+            ))}
+          </div>
         </div>
       )}
 
-      {links && links.length > 0 && (
-        <div className="resp-section resp-links">
-          {links.map((u, i) => (
-            <a key={i} href={u} target="_blank" rel="noreferrer">{u}</a>
-          ))}
+      {/* cURL Commands */}
+      {curl && curl.length > 0 && (
+        <div className="resp-section">
+          <h3 className="resp-section-title">cURL Commands</h3>
+          <div className="resp-curl-commands">
+            {curl.map((command, i) => (
+              <CodeBlock key={i} language="bash" code={cleanText(command)} />
+            ))}
+          </div>
         </div>
       )}
 
-      {(notes && notes.length > 0) || (warnings && warnings.length > 0) ? (
-        <div className="resp-meta">
-          {notes && notes.length > 0 && (
-            <div className="resp-notes">
-              <b>Notes</b>
-              <ul>{notes.map((n, i) => (<li key={i}>{n}</li>))}</ul>
-            </div>
-          )}
-          {warnings && warnings.length > 0 && (
-            <div className="resp-warnings">
-              <b>Warnings</b>
-              <ul>{warnings.map((w, i) => (<li key={i}>{w}</li>))}</ul>
-            </div>
-          )}
+      {/* Values */}
+      {values && Object.keys(values).length > 0 && (
+        <div className="resp-section">
+          <h3 className="resp-section-title">Key Values</h3>
+          <div className="resp-values">
+            {Object.entries(values).map(([key, value]) => (
+              <div key={key} className="resp-value-item">
+                <span className="resp-value-key">{key}:</span>
+                <span className="resp-value-value">{value}</span>
+              </div>
+            ))}
+          </div>
         </div>
-      ) : null}
+      )}
+
+      {/* Numbers */}
+      {numbers && Object.keys(numbers).length > 0 && (
+        <div className="resp-section">
+          <h3 className="resp-section-title">Statistics</h3>
+          <div className="resp-numbers">
+            {Object.entries(numbers).map(([key, value]) => (
+              <div key={key} className="resp-number-item">
+                <span className="resp-number-key">{key}:</span>
+                <span className="resp-number-value">{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 }
@@ -135,13 +168,12 @@ function Chat() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamMsg, setStreamMsg] = useState(null);
-  const [streamSources, setStreamSources] = useState([]);
+
   const [useStreaming, setUseStreaming] = useState(false);
-  const eventSourceRef = useRef(null);
+
 
   const handleStream = (question) => {
     setStreamMsg("");
-    setStreamSources([]);
     setLoading(true);
     const userMessage = { role: "user", content: question };
     setHistory((h) => [...h, userMessage]);
@@ -171,7 +203,7 @@ function Chat() {
       const decoder = new TextDecoder();
       let streamedResponse = "";
 
-      function readStream() {
+      const readStream = () => {
         return reader.read().then(({ done, value }) => {
           if (done) {
             // End of stream
@@ -183,7 +215,14 @@ function Chat() {
               ...h,
               {
                 role: "bot",
-                data: { type: "simple", content: { description: streamedResponse } },
+                data: { 
+                  short_answers: [],
+                  descriptions: [streamedResponse],
+                  url: [],
+                  curl: [],
+                  values: {},
+                  numbers: {}
+                },
                 content: streamedResponse,
                 sources: [],
               },
@@ -210,7 +249,14 @@ function Chat() {
                     ...h,
                     {
                       role: "bot",
-                      data: { type: "simple", content: { description: streamedResponse } },
+                      data: { 
+                        short_answers: [],
+                        descriptions: [streamedResponse],
+                        url: [],
+                        curl: [],
+                        values: {},
+                        numbers: {}
+                      },
                       content: streamedResponse,
                       sources: [],
                     },
@@ -233,7 +279,7 @@ function Chat() {
           // Continue reading
           return readStream();
         });
-      }
+      };
 
       return readStream();
     })
@@ -244,7 +290,18 @@ function Chat() {
       
       setHistory((h) => [
         ...h,
-        { role: "bot", content: "Error in streaming response." },
+        { 
+          role: "bot", 
+          data: {
+            short_answers: [],
+            descriptions: ["Error in streaming response."],
+            url: [],
+            curl: [],
+            values: { error: "streaming_error" },
+            numbers: {}
+          },
+          content: "Error in streaming response." 
+        },
       ]);
     });
   };
@@ -266,21 +323,30 @@ function Chat() {
           {
             role: "bot",
             data,
-            content: data.content?.description || data.content?.title || "",
+            content: data.descriptions?.[0] || data.short_answers?.[0] || "Response received",
             sources: data.sources || [],
           },
         ]);
         setStreamMsg(null);
-        setStreamSources([]);
         setLoading(false);
       })
       .catch(() => {
         setHistory((h) => [
           ...h,
-          { role: "bot", content: "Error contacting backend." },
+          { 
+            role: "bot", 
+            data: {
+              short_answers: [],
+              descriptions: ["Error contacting backend."],
+              url: [],
+              curl: [],
+              values: { error: "backend_error" },
+              numbers: {}
+            },
+            content: "Error contacting backend." 
+          },
         ]);
         setStreamMsg(null);
-        setStreamSources([]);
         setLoading(false);
       });
   };
@@ -344,18 +410,7 @@ function Chat() {
               {streamMsg}
               <TypingDots />
             </div>
-            {streamSources && streamSources.length > 0 && (
-              <div className="chat-sources">
-                <b>Sources:</b>
-                <ul>
-                  {streamSources.map((src, j) => (
-                    <li key={j}>
-                      {src.title} — {src.source}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+
           </div>
         )}
       </div>

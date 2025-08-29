@@ -48,6 +48,35 @@ async def get_all_sessions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
 
+@router.get("/test/{session_id}")
+async def test_memory(session_id: str):
+    """Test memory functionality for a session."""
+    try:
+        from core.memory import get_memory_for_session
+        
+        # Get memory for session
+        memory = get_memory_for_session(session_id)
+        
+        # Add a test message
+        memory.chat_memory.add_user_message("Test user message")
+        memory.chat_memory.add_ai_message("Test AI response")
+        
+        # Get status
+        from core.memory import get_memory_status
+        status = get_memory_status(session_id)
+        
+        print(f"DEBUG: Memory test for session {session_id} - Status: {status}")
+        
+        return {
+            "session_id": session_id,
+            "test_message_added": True,
+            "memory_status": status,
+            "message": f"Test message added to session {session_id}"
+        }
+    except Exception as e:
+        print(f"ERROR: Memory test failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Memory test failed: {str(e)}")
+
 @router.get("/health")
 async def memory_health():
     """Get memory system health status."""

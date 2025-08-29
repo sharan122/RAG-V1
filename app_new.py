@@ -10,6 +10,21 @@ app = FastAPI(
     description=APP_DESCRIPTION
 )
 
+# Startup event to reload existing Weaviate data
+@app.on_event("startup")
+async def startup_event():
+    """Reload existing Weaviate data on application startup."""
+    try:
+        from core.state import weaviate_client_instance, weaviate_index_name, vector_store, retriever, rag_chain
+        from routers.docs import reload_existing_data
+        
+        print("🔄 Starting up - attempting to reload existing Weaviate data...")
+        await reload_existing_data()
+        print("✅ Startup complete - existing data reloaded successfully")
+    except Exception as e:
+        print(f"⚠️ Startup warning - could not reload existing data: {e}")
+        print("ℹ️ This is normal for first-time startup")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,

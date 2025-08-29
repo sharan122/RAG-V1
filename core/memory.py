@@ -13,6 +13,20 @@ def get_memory_for_session(session_id: str) -> ConversationBufferMemory:
             return_messages=True,
             k=10  # Keep last 10 messages
         )
+    else:
+        # TOKEN MANAGEMENT: Clean up old messages if memory gets too large
+        memory = session_memories[session_id]
+        if len(memory.chat_memory.messages) > 20:  # If more than 20 messages
+            print(f"DEBUG: Memory cleanup for session {session_id}: trimming from {len(memory.chat_memory.messages)} to 10 messages")
+            # Keep only the last 10 messages
+            messages = memory.chat_memory.messages[-10:]
+            memory.chat_memory.clear()
+            for msg in messages:
+                if msg.type == "human":
+                    memory.chat_memory.add_user_message(msg.content)
+                elif msg.type == "ai":
+                    memory.chat_memory.add_ai_message(msg.content)
+    
     return session_memories[session_id]
 
 def clear_memory_for_session(session_id: str) -> bool:
