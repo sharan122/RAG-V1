@@ -36,7 +36,7 @@ def generate_perfect_curl(user_input: str, context_docs: List[Document], detecte
             
             # Initialize Claude
             claude = ChatAnthropic(
-                model="claude-3-haiku-20240307",
+                model="claude-3-5-haiku-20241022",
                 anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
             )
             
@@ -263,7 +263,7 @@ from core.state import (
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://127.0.0.1:8080")
 WEAVIATE_INDEX_NAME = os.getenv("WEAVIATE_INDEX_NAME", "RAGDocs")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
 
 # Add missing helper functions
 def build_task_preface(intent: str, method: Optional[str], path: Optional[str]) -> str:
@@ -429,569 +429,247 @@ def build_structured_endpoint_json(base_url: Optional[str], endpoint: Dict[str, 
 
 @router.post("/process", response_model=SuccessResponse)
 async def process_documentation(request: DocumentationRequest):
-    """Process API documentation and create RAG system."""
+    """Process API documentation and create RAG system efficiently."""
     import core.state as state
     
     try:
-        # Strip yaml front matter
+        # Strip yaml front matter and store raw text
         raw = re.sub(r"^---\n.*?\n---\n", "", request.content, flags=re.DOTALL)
-        # Keep a copy of raw text for cURL fallback/LLM filters
         state.raw_document_text = raw
+        print(f"Processing document: {len(raw)} characters")
 
-        # IMPROVED CHUNKING STRATEGY - Prevent content truncation and ensure endpoint coverage
-        print(f"DEBUG: Processing document with {len(raw)} characters")
-        
-        # Step 1: Split by major sections (H1 headers only) to keep API sections together
-        major_sections = [("#","h1")]
+        # ENHANCED CHUNKING STRATEGY - Multi-level chunking for better context
+        # First: Split by major sections to preserve API structure
+        major_sections = [("#", "h1"), ("##", "h2")]
         major_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=major_sections)
         major_docs = major_splitter.split_text(raw)
-        print(f"DEBUG: Created {len(major_docs)} major sections")
         
-        # Step 2: For each major section, create intelligent chunks
-        all_chunks: List[Document] = []
+        # Second: Create detailed chunks with better separators
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1500,           # Smaller chunks for better precision
+            chunk_overlap=300,         # Good overlap for context
+            separators=[
+                "\n\n## ",             # API section headers
+                "\n\n### ",            # Endpoint headers
+                "\n\n",                # Paragraph breaks
+                "\n",                  # Line breaks
+                " ",                   # Word breaks
+                ""                     # Character breaks
+            ],
+            length_function=len,
+            is_separator_regex=False
+        )
         
-        for i, major_doc in enumerate(major_docs):
-            section_title = major_doc.metadata.get("h1", f"Section_{i}")
-            print(f"DEBUG: Processing section: {section_title}")
-            
-            # Use larger chunks with more overlap for API documentation
-            section_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=3000,      # Increased from 1000 to prevent truncation
-                chunk_overlap=600,     # Increased from 200 for better continuity
-                separators=["\n\n", "\n", " ", ""],  # Preserve paragraph structure
-                length_function=len,
-                is_separator_regex=False
-            )
-            
-            section_chunks = section_splitter.split_documents([major_doc])
-            print(f"DEBUG: Section '{section_title}' created {len(section_chunks)} chunks")
-            
-            # Enrich each chunk with comprehensive metadata
-            for j, chunk in enumerate(section_chunks):
-                chunk.metadata.update({
-                    "source": request.title,
-                    "section_path": build_section_path(chunk.metadata),
-                    "section_index": i,
-                    "chunk_index": j,
-                    "total_chunks_in_section": len(section_chunks),
-                    "chunk_size": len(chunk.page_content)
-                })
-                
-                # Validate chunk quality - reject chunks that are too short or broken
-                if len(chunk.page_content.strip()) < 100:
-                    print(f"DEBUG: Rejecting chunk {j} in section {section_title} - too short ({len(chunk.page_content)} chars)")
-                    continue
-                
-                # Check for broken content patterns
-                if any(pattern in chunk.page_content for pattern in ["}\n]\n```", "wABEgEAAAADAOz_"]):
-                    print(f"DEBUG: Rejecting chunk {j} in section {section_title} - contains broken content")
-                    continue
-                
-                all_chunks.append(chunk)
+        # Process each major section
+        all_chunks = []
+        for major_doc in major_docs:
+            section_chunks = text_splitter.split_documents([major_doc])
+            all_chunks.extend(section_chunks)
         
-        print(f"DEBUG: Total chunks created: {len(all_chunks)} (after quality filtering)")
+        chunks = all_chunks
+        print(f"Created {len(chunks)} chunks")
         
-        # Step 3: Create additional endpoint-specific chunks for better retrieval
-        endpoint_chunks = []
-        for chunk in all_chunks:
-            content = chunk.page_content.lower()
-            # If chunk contains endpoint information, create additional focused chunks
-            if any(keyword in content for keyword in ["post", "get", "put", "delete", "http", "api", "endpoint"]):
-                # Create a focused chunk around this endpoint
-                focused_chunk = Document(
-                    page_content=chunk.page_content,
-                    metadata={
-                        **chunk.metadata,
-                        "is_endpoint_focused": True,
-                        "endpoint_density": "high"
-                    }
-                )
-                endpoint_chunks.append(focused_chunk)
+        # Enrich chunks with metadata
+        for i, chunk in enumerate(chunks):
+            chunk.metadata.update({
+                "source": request.title,
+                "chunk_index": i,
+                "chunk_size": len(chunk.page_content),
+                "section_path": build_section_path(chunk.metadata)
+            })
         
-        # Combine all chunks
-        chunks = all_chunks + endpoint_chunks
-        print(f"DEBUG: Final chunk count: {len(chunks)} (including {len(endpoint_chunks)} endpoint-focused chunks)")
-        
-        # Validate final chunk quality
+        # Filter out low-quality chunks (keep all valid content)
         valid_chunks = []
         for chunk in chunks:
-            if len(chunk.page_content.strip()) >= 100 and not any(pattern in chunk.page_content for pattern in ["}\n]\n```", "wABEgEAAAADAOz_"]):
+            content = chunk.page_content.strip()
+            # Only reject if extremely short or clearly broken
+            if len(content) >= 50 and not any(pattern in content for pattern in ["}\n]\n```", "wABEgEAAAADAOz_"]):
                 valid_chunks.append(chunk)
         
         chunks = valid_chunks
-        print(f"DEBUG: Final valid chunks: {len(chunks)}")
+        print(f"Valid chunks after filtering: {len(chunks)}")
         
-        if len(chunks) < 20:
-            print(f"WARNING: Very few chunks created ({len(chunks)}). Document may not be properly processed.")
-            # Fallback: create larger chunks
+        # Fallback if too few chunks
+        if len(chunks) < 10:
+            print("Creating fallback chunks with larger size")
             fallback_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=5000,
-                chunk_overlap=1000,
+                chunk_size=4000,
+                chunk_overlap=800,
                 separators=["\n\n", "\n", " ", ""]
             )
-            fallback_chunks = fallback_splitter.split_documents([Document(page_content=raw, metadata={"source": request.title})])
-            chunks = fallback_chunks
-            print(f"DEBUG: Fallback chunks created: {len(chunks)}")
-        
-        # COMPREHENSIVE CHUNK QUALITY ANALYSIS
-        print(f"\n=== CHUNK QUALITY ANALYSIS ===")
-        print(f"Total chunks: {len(chunks)}")
-        print(f"Total content length: {sum(len(c.page_content) for c in chunks)} characters")
-        print(f"Average chunk size: {sum(len(c.page_content) for c in chunks) / len(chunks) if chunks else 0:.0f} characters")
-        
-        # Check for endpoint coverage
-        endpoint_keywords = ["post", "get", "put", "delete", "http", "api", "endpoint", "curl"]
-        endpoint_chunks_count = sum(1 for c in chunks if any(keyword in c.page_content.lower() for keyword in endpoint_keywords))
-        print(f"Chunks with endpoint content: {endpoint_chunks_count}/{len(chunks)}")
-        
-        # Check for broken content
-        broken_chunks = sum(1 for c in chunks if any(pattern in c.page_content for pattern in ["}\n]\n```", "wABEgEAAAADAOz_", "```\n```", "{\n\n}"]))
-        print(f"Chunks with broken content: {broken_chunks}/{len(chunks)}")
-        
-        if broken_chunks > 0:
-            print(f"WARNING: {broken_chunks} chunks contain broken content patterns!")
-        
-        # Ensure minimum chunk count for comprehensive coverage
-        if len(chunks) < 30:
-            print(f"WARNING: Insufficient chunks ({len(chunks)}) for comprehensive API documentation coverage!")
-            print(f"Expected: 50+ chunks for full API documentation")
-            print(f"Current: {len(chunks)} chunks")
-        
-        print(f"=== END CHUNK ANALYSIS ===\n")
-        
-        # Enrich metadata for all chunks
-        for d in chunks:
-            d.metadata.setdefault("source", request.title)
-            d.metadata["section_path"] = build_section_path(d.metadata)
+            chunks = fallback_splitter.split_documents([Document(page_content=raw, metadata={"source": request.title})])
+            print(f"Fallback chunks created: {len(chunks)}")
 
-        # Embeddings
-        print(f"DEBUG: Initializing Cohere embeddings with model: embed-english-v3.0")
-        try:
-            embeddings = CohereEmbeddings(model="embed-english-v3.0")
-            # Test embeddings with a simple text
-            test_embedding = embeddings.embed_query("test")
-            print(f"✅ Cohere embeddings working - test embedding length: {len(test_embedding)}")
-        except Exception as embed_error:
-            print(f"❌ Cohere embeddings failed: {embed_error}")
-            raise HTTPException(status_code=500, detail=f"Embeddings initialization failed: {str(embed_error)}")
-
-        # Sanitize and set index/class name
+        # Initialize embeddings and Weaviate
+        print("Initializing embeddings and Weaviate...")
+        embeddings = CohereEmbeddings(model="embed-english-v3.0")
         index_name = sanitize_index_name(request.title)
-
-        # Initialize explicit Weaviate client (recommended, fixes URL/auth errors)
-        print(f"DEBUG: Initializing Weaviate client with URL: {WEAVIATE_URL}")
         client = weaviate_client.Client(url=WEAVIATE_URL)
         
-        # Test Weaviate connection
-        try:
-            client.is_ready()
-            print(f"✅ Weaviate client connection successful")
-        except Exception as conn_error:
-            print(f"❌ Weaviate client connection failed: {conn_error}")
-            raise HTTPException(status_code=500, detail=f"Weaviate connection failed: {str(conn_error)}")
+        # Test connections
+        client.is_ready()
+        print("✅ Connections successful")
         
-        # Store weaviate client & index globally so clear/status can use them
+        # Store globally
         state.weaviate_client_instance = client
         state.weaviate_index_name = index_name
 
-        # Defer vector store creation until after we assemble all documents
-        vector_store = None
-
-        # Let LangChain handle schema creation automatically
-        # This ensures compatibility between schema and vector store
-        print(f"DEBUG: Using LangChain Weaviate integration for automatic schema creation")
-
-        # Extract endpoints, base URL and build a synthetic catalog
-        # Prefer OpenAPI structured parsing if available
+        # Extract endpoints and base URL
+        print("Extracting endpoints...")
         structured_eps = attempt_parse_openapi(raw)
         text_eps = extract_endpoints_from_text(raw)
-        # LLM-assisted recall pass with validation
         llm_eps_raw = _llm_recall_endpoints_full(raw)
-        llm_eps_validated: List[Dict[str, Any]] = []
-        for e in llm_eps_raw:
-            m = e.get("http_method")
-            p = e.get("endpoint")
-            if not m or not p:
-                continue
-            if _validate_endpoint_presence(raw, m, p):
-                llm_eps_validated.append(e)
-        # ENHANCED ENDPOINT EXTRACTION - Scan chunks for additional endpoints
         
-        chunk_endpoints = []
-        for chunk in chunks:
-            chunk_text = chunk.page_content.lower()
-            # Look for HTTP method + endpoint patterns in chunks
-            endpoint_patterns = [
-                r'(post|get|put|delete|patch)\s+([/\w\-{}]+)',
-                r'```http\s*\n(post|get|put|delete|patch)\s+([/\w\-{}]+)',
-                r'endpoint[:\s]+(post|get|put|delete|patch)\s+([/\w\-{}]+)'
-            ]
-            
-            for pattern in endpoint_patterns:
-                matches = re.findall(pattern, chunk_text, re.IGNORECASE)
-                for match in matches:
-                    if len(match) == 2:
-                        method, endpoint = match
-                        chunk_endpoints.append({
-                            "http_method": method.upper(),
-                            "endpoint": endpoint,
-                            "source": "chunk_scan",
-                            "chunk_id": chunk.metadata.get("chunk_index", "unknown")
-                        })
-        
-        print(f"DEBUG: Enhanced endpoint extraction found {len(chunk_endpoints)} additional endpoints from chunks")
-        
-        # Merge unique endpoints from all sources
+        # Merge and validate endpoints
         merged: Dict[str, Dict[str, Any]] = {}
-        all_endpoint_sources = structured_eps + text_eps + llm_eps_validated + chunk_endpoints
+        all_endpoint_sources = structured_eps + text_eps + llm_eps_raw
         
         for e in all_endpoint_sources:
             key = f"{e.get('http_method')} {e.get('endpoint')}"
-            if key not in merged:
+            if key not in merged and e.get('http_method') and e.get('endpoint'):
                 merged[key] = e
         
         state.extracted_endpoints = list(merged.values())
-        print(f"DEBUG: Total unique endpoints found: {len(state.extracted_endpoints)}")
-        
-        # Validate endpoint coverage
-        expected_endpoints = [
-            "POST /file-storage", "POST /bulk-file-storage", "GET /file-storage/file",
-            "POST /file-storage/bulkDownload", "DELETE /file-storage/file",
-            "POST /file-storage/moveFiles", "POST /file-storage/copyFiles",
-            "POST /file-utilities/convert", "POST /file-utilities/split",
-            "POST /file-utilities/merge", "POST /file-utilities/encrypt",
-            "GET /file-storage/file/versions", "POST /file-storage/presignedurl"
-        ]
-        
-        found_endpoints = [f"{e.get('http_method')} {e.get('endpoint')}" for e in state.extracted_endpoints]
-        missing_endpoints = [ep for ep in expected_endpoints if ep not in found_endpoints]
-        
-        if missing_endpoints:
-            print(f"WARNING: Missing expected endpoints: {missing_endpoints}")
-        else:
-            print(f"✅ All expected endpoints found!")
-        
-        # PERFECT cURL GENERATION FUNCTION - MOVED TO GLOBAL SCOPE
-        pass
-        
-        # Build catalog text
-        api_catalog_text = build_catalog_text(request.title, extracted_endpoints) if extracted_endpoints else None
         state.detected_base_url = detect_base_url_from_text(raw)
-        # Collect all base URLs for list_base_urls
         state.base_urls_detected = extract_all_base_urls(raw)
-        # Precompute total cURL example count from raw docs for exact global counts
         state.curl_examples_total_count = len(_extract_curl_blocks_from_text(raw))
+        
+        print(f"Found {len(state.extracted_endpoints)} endpoints")
 
-        # Build Documents for endpoints and catalog (semantic chunking: one endpoint per chunk)
+        # Create endpoint documents
         endpoint_docs: List[Document] = []
-        for e in extracted_endpoints:
-            content_lines = [
-                f"### {e['http_method']} {e['endpoint']}",
-                e.get("summary", ""),
-                f"Auth: {e.get('auth','unknown')}",
-            ]
+        for e in state.extracted_endpoints:
             endpoint_doc = Document(
-                page_content="\n".join([line for line in content_lines if line]),
+                page_content=f"### {e['http_method']} {e['endpoint']}\n{e.get('summary', '')}",
                 metadata={
                     "source": request.title,
                     "title": f"{e['http_method']} {e['endpoint']}",
-                    "section_path": f"API > {e['http_method']} {e['endpoint']}",
                     "endpoint": e["endpoint"],
                     "http_method": e["http_method"],
-                    "base_url": detected_base_url,
-                    "auth": e.get("auth", "unknown"),
-                    "has_curl": e.get("has_curl", False),
-                    "is_catalog": False,
-                    "tags": e.get("tags", []),
+                    "base_url": state.detected_base_url,
                     "section": "endpoint",
                 }
             )
             endpoint_docs.append(endpoint_doc)
 
-            # Hybrid: also store structured JSON as a separate doc for deterministic lookups
-            structured = build_structured_endpoint_json(detected_base_url, e)
-            endpoint_docs.append(Document(
-                page_content=json.dumps(structured, ensure_ascii=False),
-                metadata={
-                    "source": request.title,
-                    "title": f"{e['http_method']} {e['endpoint']} (structured)",
-                    "section_path": f"API > {e['http_method']} {e['endpoint']} > structured",
-                    "endpoint": e["endpoint"],
-                    "http_method": e["http_method"],
-                    "base_url": detected_base_url,
-                    "is_structured": True,
-                    "section": "structured",
-                }
-            ))
-
-        catalog_docs: List[Document] = []
-        if api_catalog_text:
-            catalog_docs.append(Document(
-                page_content=api_catalog_text,
-                metadata={
-                    "source": request.title,
-                    "title": f"{request.title} Catalog",
-                    "section_path": "API > Catalog",
-                    "is_catalog": True,
-                }
-            ))
-
-        # Add documents (chunks + endpoint summaries + catalog)
-        all_docs: List[Document] = chunks + endpoint_docs + catalog_docs
-        # Create Weaviate store and import docs in one step (more reliable schema creation)
-        print(f"DEBUG: Attempting to create Weaviate store with {len(all_docs)} documents")
-        print(f"DEBUG: Index name: {index_name}")
-        print(f"DEBUG: Weaviate client: {client}")
-        print(f"DEBUG: Embeddings model: {embeddings}")
+        # Combine all documents
+        all_docs: List[Document] = chunks + endpoint_docs
+        print(f"Total documents to store: {len(all_docs)}")
         
-        try:
-            vector_store = WeaviateStore.from_documents(
-                documents=all_docs,
-                embedding=embeddings,
-                client=client,
-                index_name=index_name,
-                text_key="page_content",
-            )
-            print(f"DEBUG: WeaviateStore.from_documents() completed successfully")
-        except Exception as weaviate_error:
-            print(f"ERROR: WeaviateStore.from_documents() failed: {weaviate_error}")
-            print(f"ERROR: This means the documents were NOT stored in Weaviate!")
-            raise HTTPException(status_code=500, detail=f"Weaviate storage failed: {str(weaviate_error)}")
+        # Store in Weaviate
+        print("Storing documents in Weaviate...")
+        vector_store = WeaviateStore.from_documents(
+            documents=all_docs,
+            embedding=embeddings,
+            client=client,
+            index_name=index_name,
+            text_key="page_content",
+        )
         
-        # LangChain Weaviate integration handles storage automatically
-        print(f"DEBUG: LangChain Weaviate will store {len(all_docs)} documents automatically")
+        # Verify storage
+        stored_count = len(client.query.get(index_name, ["page_content"]).with_limit(1000).do().get("data", {}).get("Get", {}).get(index_name, []))
+        print(f"✅ Stored {stored_count} documents in Weaviate")
         
-        # Verify storage was successful
-        try:
-            # Simple verification that documents were stored
-            stored_count = len(client.query.get(index_name, ["page_content"]).with_limit(1000).do().get("data", {}).get("Get", {}).get(index_name, []))
-            print(f"DEBUG: Verification - {stored_count} documents stored in Weaviate")
-            
-            if stored_count > 0:
-                print(f"✅ Weaviate storage successful - {stored_count} documents persisted")
-            else:
-                print(f"❌ WARNING: No documents found in Weaviate after storage!")
-                print(f"DEBUG: Attempting manual storage as fallback...")
-                
-                # Manual fallback storage
-                try:
-                    for i, doc in enumerate(all_docs):
-                        client.data_object.create(
-                            data_object={
-                                "page_content": doc.page_content,
-                                "title": doc.metadata.get("title", ""),
-                                "section_path": doc.metadata.get("section_path", ""),
-                                "endpoint": doc.metadata.get("endpoint", ""),
-                                "http_method": doc.metadata.get("http_method", ""),
-                                "base_url": doc.metadata.get("base_url", ""),
-                                "auth": doc.metadata.get("auth", ""),
-                                "tags": doc.metadata.get("tags", []),
-                                "has_curl": doc.metadata.get("has_curl", False),
-                                "is_catalog": doc.metadata.get("is_catalog", False),
-                                "is_example": doc.metadata.get("is_example", False),
-                                "is_param_table": doc.metadata.get("is_param_table", False),
-                                "is_structured": doc.metadata.get("is_structured", False),
-                                "section": doc.metadata.get("section", ""),
-                                "source": doc.metadata.get("source", ""),
-                                "cURLs": doc.metadata.get("cURLs", ""),
-                                "section_index": doc.metadata.get("section_index", 0),
-                                "chunk_index": doc.metadata.get("chunk_index", 0),
-                                "total_chunks_in_section": doc.metadata.get("total_chunks_in_section", 0),
-                                "chunk_size": doc.metadata.get("chunk_size", 0),
-                                "is_endpoint_focused": doc.metadata.get("is_endpoint_focused", False),
-                                "endpoint_density": doc.metadata.get("endpoint_density", "")
-                            },
-                            class_name=index_name
-                        )
-                        print(f"DEBUG: Manually stored document {i+1}/{len(all_docs)}")
-                    
-                    # Verify manual storage
-                    manual_stored_count = len(client.query.get(index_name, ["page_content"]).with_limit(1000).do().get("data", {}).get("Get", {}).get(index_name, []))
-                    print(f"DEBUG: Manual storage verification - {manual_stored_count} documents stored")
-                    
-                    if manual_stored_count > 0:
-                        print(f"✅ Manual storage successful - {manual_stored_count} documents persisted")
-                    else:
-                        print(f"❌ Manual storage also failed!")
-                        
-                except Exception as manual_error:
-                    print(f"ERROR: Manual storage failed: {manual_error}")
-                    
-        except Exception as verify_error:
-            print(f"WARNING: Could not verify Weaviate storage: {verify_error}")
-        
-        # Store in global state
+        # Store in global state with MMR retrieval for better diversity
         state.vector_store = vector_store
-        state.retriever = vector_store.as_retriever(search_kwargs={"k": 8})
+        state.retriever = vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": 8,                    # Final number of documents
+                "fetch_k": 20,             # Number of documents to fetch before MMR
+                "lambda_mult": 0.7         # Balance between relevance and diversity
+            }
+        )
         state.documents_count = len(all_docs)
         state.db_size_mb = len(raw) / (1024 * 1024)
 
-        # Create retriever (same MMR config you used)
-        state.retriever = state.vector_store.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 6, "fetch_k": 24, "lambda_mult": 0.3}
-        )
-
-        # Build LLM + chain (use cheaper default model; configurable via ANTHROPIC_MODEL)
+        # Create RAG chain
+        print("Creating RAG chain...")
         llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0.2, max_tokens=600)
-
-        # Read the structured prompt from file
+        
+        # Read prompt from file
         try:
             with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
                 question_prompt = f.read()
         except FileNotFoundError:
-            # Fallback prompt if file not found
-            question_prompt = """You are an expert API documentation assistant. Answer the user's question based on the provided context.
+            question_prompt = """You are an expert API documentation assistant. Answer based on the provided context.
 
-IMPORTANT: You MUST respond with a JSON object in EXACTLY this format:
-
+Respond with JSON format:
 {{
-  "short_answers": ["brief answer 1", "brief answer 2"],
-  "descriptions": ["detailed description 1", "detailed description 2"],
-  "url": ["https://example.com/api1", "https://example.com/api2"],
-  "curl": ["curl -X GET 'https://api.example.com/endpoint'", "curl -X POST 'https://api.example.com/endpoint'"],
-  "values": {{"key1": "value1", "key2": "value2"}},
-  "numbers": {{"count": 5, "total": 100}}
+  "short_answers": ["brief answer"],
+  "descriptions": ["detailed description"],
+  "url": ["https://example.com/api"],
+  "curl": ["curl -X GET 'https://api.example.com/endpoint'"],
+  "values": {{"key": "value"}},
+  "numbers": {{"count": 5}}
 }}
 
-RULES:
-1. Use ONLY these exact keys: short_answers, descriptions, url, curl, values, numbers
-2. Each key should contain an array or object as shown above
-3. If a key has no relevant data, use an empty array [] or empty object {{}}
-4. NEVER nest JSON objects - keep it flat
-5. NEVER add additional keys
-6. ALWAYS return valid JSON that can be parsed
-
 Context: {context}
-
 Question: {input}
+Respond with ONLY the JSON object."""
 
-Respond with ONLY the JSON object, no additional text."""
-
-        # Create the prompt template - no need to escape braces for create_stuff_documents_chain
         prompt = ChatPromptTemplate.from_template(question_prompt)
-        
-        # Create the document chain that will handle the Document objects
         doc_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
-
-        # --- FIX: Map retriever output to 'context' key expected by the prompt ---
-        from langchain.schema.runnable import RunnableLambda
         
-        def _map_inputs_for_chain(x: Dict[str, Any]) -> Dict[str, Any]:
+        # Enhanced retriever mapping with query expansion
+        def _map_inputs(x: Dict[str, Any]) -> Dict[str, Any]:
             user_input = x.get("input", "")
-            # Intent detection
-            intent = detect_intent(user_input)
             
-            # Parse explicit endpoint to bias retrieval
-            explicit = parse_explicit_endpoint(user_input)
+            # Query expansion for better retrieval
+            expanded_queries = [user_input]
             
-            try:
-                # COMPREHENSIVE RETRIEVAL STRATEGY
-                if intent == "comprehensive_list":
-                    print(f"DEBUG: Using comprehensive retrieval for intent: {intent}")
-                    # For comprehensive listing, get ALL documents with high limits
-                    docs = hybrid_retrieve_documents(
-                        user_input=user_input,
-                        method=explicit.get("http_method") if explicit else None,
-                        endpoint=explicit.get("endpoint") if explicit else None,
-                        k_candidates=1000,  # Much higher limit for comprehensive coverage
-                        k_final=500,        # Return more final results
-                        alpha=0.1          # Bias toward BM25 for broader coverage
-                    )
-                    print(f"DEBUG: Comprehensive retrieval returned {len(docs)} documents")
-                    
-                    # TOKEN MANAGEMENT: Limit comprehensive listing to prevent token limit exceeded
-                    max_comprehensive_docs = 100  # Limit comprehensive listing to 100 docs
-                    if len(docs) > max_comprehensive_docs:
-                        print(f"DEBUG: Token management: Limiting comprehensive docs from {len(docs)} to {max_comprehensive_docs}")
-                        docs = docs[:max_comprehensive_docs]
-                    
-                    # FALLBACK: If hybrid retrieval doesn't provide enough coverage, use raw text
-                    if len(docs) < 10:  # Threshold for insufficient coverage
-                        print(f"DEBUG: Hybrid retrieval returned only {len(docs)} docs, using raw text fallback")
-                        # Create a comprehensive document from raw text
-                        raw_doc = Document(
-                            page_content=state.raw_document_text,
-                            metadata={
-                                "title": "Complete API Documentation",
-                                "section_path": "full_document",
-                                "source": "raw_text_fallback"
-                            }
-                        )
-                        docs = [raw_doc]
-                        print(f"DEBUG: Fallback created comprehensive document with {len(state.raw_document_text)} characters")
-                else:
-                    # Standard retrieval for specific requests
-                    if explicit:
-                        docs = state.retriever.invoke(f"{explicit['http_method']} {explicit['endpoint']}\n\n{user_input}")
-                    else:
-                        docs = state.retriever.invoke(user_input)
-            except Exception as retrieval_error:
-                print(f"DEBUG: retriever.invoke error: {retrieval_error}")
-                docs = []
+            # Add API-specific query variations
+            if any(word in user_input.lower() for word in ["api", "endpoint", "request"]):
+                expanded_queries.extend([
+                    f"REST API {user_input}",
+                    f"HTTP {user_input}",
+                    f"API documentation {user_input}"
+                ])
             
-            # INTEGRATE PERFECT cURL GENERATION
-            # Check if user wants to create cURL and bypass the broken LLM
-            if "create" in user_input.lower() and "curl" in user_input.lower():
-                print(user_input,"user_input================")
-                print(f"DEBUG: cURL generation detected, using perfect cURL generator")
-                try:
-                    # Limit docs for cURL generation to avoid token issues
-                    limited_docs = docs[:20] if len(docs) > 20 else docs
-                    print(f"DEBUG: Limited docs for cURL from {len(docs)} to {len(limited_docs)}")
-                    curl_response = generate_perfect_curl(user_input, limited_docs, state.detected_base_url)
-                    if curl_response:
-                        print(f"DEBUG: Perfect cURL generated successfully")
-                        # Return the cURL response directly, bypassing the broken LLM
-                        return {
-                            "context": limited_docs,
-                            "input": user_input,
-                            "chat_history": x.get("chat_history", ""),
-                            "task_preface": "Generate perfect cURL command",
-                            "curl_response": curl_response  # This will be used to bypass the LLM
-                        }
-                except Exception as curl_error:
-                    print(f"ERROR: Perfect cURL generation failed: {curl_error}")
-                    # Continue with normal flow if cURL generation fails
+            # Add method-specific queries
+            if "get" in user_input.lower():
+                expanded_queries.append(user_input.replace("get", "retrieve fetch"))
+            if "post" in user_input.lower():
+                expanded_queries.append(user_input.replace("post", "create add"))
+            if "put" in user_input.lower():
+                expanded_queries.append(user_input.replace("put", "update modify"))
+            if "delete" in user_input.lower():
+                expanded_queries.append(user_input.replace("delete", "remove"))
             
-            # TOKEN MANAGEMENT: Limit context size to prevent token limit exceeded
-            max_docs = 50  # Limit to 50 documents to stay well under token limit
-            if len(docs) > max_docs:
-                print(f"DEBUG: Token management: Limiting docs from {len(docs)} to {max_docs} to prevent token limit exceeded")
-                docs = docs[:max_docs]
+            # Retrieve documents using expanded queries
+            all_docs = []
+            for query in expanded_queries[:3]:  # Limit to 3 queries to avoid token limits
+                docs = state.retriever.invoke(query)
+                all_docs.extend(docs)
             
-            task_preface = build_task_preface(intent, explicit.get("http_method") if explicit else None, explicit.get("endpoint") if explicit else None)
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_docs = []
+            for doc in all_docs:
+                doc_id = hash(doc.page_content)
+                if doc_id not in seen:
+                    seen.add(doc_id)
+                    unique_docs.append(doc)
+            
+            # Limit to top 8 most relevant documents
+            docs = unique_docs[:8]
+            
             return {
                 "context": docs,
                 "input": user_input,
-                "chat_history": x.get("chat_history", ""),
-                "task_preface": task_preface
+                "chat_history": x.get("chat_history", "")
             }
         
-        retriever_chain = RunnableLambda(_map_inputs_for_chain)
-        
-        # Create a custom chain that handles cURL generation bypass
-        def _handle_curl_bypass(x: Dict[str, Any]) -> Dict[str, Any]:
-            """Handle cURL generation bypass when perfect cURL is generated"""
-            if "curl_response" in x:
-                print(f"DEBUG: Bypassing LLM with perfect cURL response")
-                return x["curl_response"]
-            else:
-                # Normal flow - use the LLM
-                return doc_chain.invoke(x)
-        
-        # Create the final chain with cURL bypass capability
-        state.rag_chain = retriever_chain | RunnableLambda(_handle_curl_bypass)
-
+        state.rag_chain = RunnableLambda(_map_inputs) | doc_chain
         state.last_updated = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())
-
+        
+        print("✅ RAG system created successfully")
         return SuccessResponse(
             message=f"Documentation processed successfully. Created {len(all_docs)} chunks and found {len(state.extracted_endpoints)} endpoints.",
             data={
-                "sections": len(major_docs),
                 "chunks": len(all_docs),
-                "db_size_mb": round(state.db_size_mb, 2),
-                "message": "Documentation processed successfully"
+                "endpoints": len(state.extracted_endpoints),
+                "db_size_mb": round(state.db_size_mb, 2)
             }
         )
         
@@ -1097,7 +775,7 @@ async def reload_documentation():
             return {
                 "status": "success",
                 "message": "Documentation reloaded successfully",
-                "documents_count": get_state().get("documents_count", 0)
+                "documents_count": state.documents_count
             }
         else:
             return {
@@ -1244,7 +922,7 @@ async def reload_existing_data():
                 from langchain_anthropic import ChatAnthropic
                 
                 llm = ChatAnthropic(
-                    model="claude-3-haiku-20240307",
+                    model="claude-3-5-haiku-20241022",
                     anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
                 )
                 

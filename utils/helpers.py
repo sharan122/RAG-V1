@@ -77,55 +77,17 @@ def determine_response_type(content: Dict[str, Any]) -> str:
         return "simple"
 
 def parse_structured_response(text: str) -> Dict[str, Any]:
-    """Parse structured response from LLM output with fixed JSON structure."""
-    print(f"DEBUG: parse_structured_response input: {text[:200]}...")
-    
+    """Parse structured response from LLM output."""
     try:
-        # Try to parse as JSON first
-        if text.strip().startswith("{"):
-            print(f"DEBUG: Attempting to parse JSON...")
-            parsed = json.loads(text)
-            print(f"DEBUG: JSON parsed successfully: {parsed}")
-            
-            if isinstance(parsed, dict):
-                # Ensure all required keys exist with proper defaults
-                structured_response = {
-                    "short_answers": parsed.get("short_answers", []),
-                    "descriptions": parsed.get("descriptions", []),
-                    "url": parsed.get("url", []),
-                    "curl": parsed.get("curl", []),
-                    "values": parsed.get("values", {}),
-                    "numbers": parsed.get("numbers", {})
-                }
-                
-                # Validate and clean the response
-                # Ensure arrays are actually arrays
-                for key in ["short_answers", "descriptions", "url", "curl"]:
-                    if not isinstance(structured_response[key], list):
-                        structured_response[key] = []
-                
-                # Ensure objects are actually objects
-                for key in ["values", "numbers"]:
-                    if not isinstance(structured_response[key], dict):
-                        structured_response[key] = {}
-                
-                print(f"DEBUG: Returning structured response: {structured_response}")
-                return structured_response
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"DEBUG: JSON parsing failed: {e}")
-        print(f"DEBUG: Raw text that failed to parse: {text}")
-        pass
-    
-    print(f"DEBUG: Using fallback - wrapping text in new structure")
-    # Fallback: wrap raw text in new structure
-    return {
-        "short_answers": [],
-        "descriptions": [text],
-        "url": [],
-        "curl": [],
-        "values": {},
-        "numbers": {}
-    }
+        return json.loads(text)
+    except:
+        return {
+            "answer": text,
+            "description": "",
+            "endpoints": [],
+            "code_examples": None,
+            "links": []
+        }
 
 def post_process_answer(answer: str) -> str:
     """Post-process LLM answer for better formatting."""

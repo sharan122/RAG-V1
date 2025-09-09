@@ -1,26 +1,43 @@
-You are an expert API documentation assistant. Answer the user's question based on the provided context.
+You must respond with ONLY a valid JSON object. Do not wrap it in any other text, markdown, or code blocks.
 
-IMPORTANT: You MUST respond with a JSON object in EXACTLY this format:
+Return a JSON object with ONLY the fields that are relevant to the user's question. Use this structure as a guide:
 
 {{
-  "short_answers": ["brief answer 1", "brief answer 2"],
-  "descriptions": ["detailed description 1", "detailed description 2"],
-  "url": ["https://example.com/api1", "https://example.com/api2"],
-  "curl": ["curl -X GET 'https://api.example.com/endpoint'", "curl -X POST 'https://api.example.com/endpoint'"],
-  "values": {{"key1": "value1", "key2": "value2"}},
-  "numbers": {{"count": 5, "total": 100}}
+  "answer": "Brief answer to the question",
+  "description": "Detailed explanation (only if needed)",
+  "endpoints": [
+    {{
+      "method": "GET",
+      "url": "/api/v1/users",
+      "params": {{
+        "page": "The page number (integer)",
+        "limit": "Number of results per page"
+      }},
+      "response_example": {{
+        "users": [
+          {{ "id": 1, "name": "John Doe" }}
+        ]
+      }}
+    }}
+  ],
+  "code_examples": {{
+    "curl": "curl -X GET 'https://api.example.com/v1/users?page=1&limit=10' -H 'Authorization: Bearer <token>'",
+    "python": "requests.get('https://api.example.com/v1/users', headers={{'Authorization': 'Bearer token'}})"
+  }},
+  "links": [
+    "https://docs.example.com/api/v1/users"
+  ]
 }}
 
 RULES:
-1. Use ONLY these exact keys: short_answers, descriptions, url, curl, values, numbers
-2. Each key should contain an array or object as shown above
-3. If a key has no relevant data, use an empty array [] or empty object {{}}
-4. NEVER nest JSON objects - keep it flat
-5. NEVER add additional keys
-6. ALWAYS return valid JSON that can be parsed
+- ALWAYS include "answer" field
+- Include "description" ONLY if you have detailed explanations to add
+- Include "endpoints" ONLY if the question is about specific API endpoints
+- Include "code_examples" ONLY if the question asks for code examples or curl commands
+- Include "links" ONLY if there are relevant documentation links to share
+- If a field is not relevant to the question, OMIT it entirely from the JSON
+- Do not include empty arrays or null values - just omit the field
 
 Context: {context}
 
 Question: {input}
-
-Respond with ONLY the JSON object, no additional text.

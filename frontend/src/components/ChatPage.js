@@ -29,136 +29,182 @@ function CodeBlock({ language = "bash", code = "" }) {
 function ResponseRenderer({ data }) {
   if (!data) return null;
   
-  // Helper function to parse JSON strings that might be embedded in descriptions
-  const parseEmbeddedJson = (text) => {
-    if (typeof text === 'string' && text.trim().startsWith('{') && text.trim().endsWith('}')) {
-      try {
-        // Replace single quotes with double quotes for valid JSON
-        const cleanedText = text.replace(/'/g, '"').replace(/\n/g, '\\n');
-        return JSON.parse(cleanedText);
-      } catch (e) {
-        console.log('Failed to parse embedded JSON:', e);
-        return null;
-      }
-    }
-    return null;
-  };
-
   // Helper function to clean up text formatting
   const cleanText = (text) => {
     if (typeof text !== 'string') return text;
     return text
-      .replace(/\\n/g, '\n')
+      .replace(/\n/g, '\n')
       .replace(/\\'/g, "'")
       .replace(/\\"/g, '"')
       .trim();
   };
 
-  // Extract data from the new response structure
-  let short_answers = data.short_answers || [];
-  let descriptions = data.descriptions || [];
-  let url = data.url || [];
-  let curl = data.curl || [];
-  let values = data.values || {};
-  let numbers = data.numbers || {};
-
-  // Check if descriptions contain embedded JSON (malformed responses)
-  if (descriptions.length > 0 && typeof descriptions[0] === 'string') {
-    const embeddedJson = parseEmbeddedJson(descriptions[0]);
-    if (embeddedJson) {
-      // Use the embedded JSON data instead
-      short_answers = embeddedJson.short_answers || short_answers;
-      descriptions = embeddedJson.descriptions || descriptions;
-      url = embeddedJson.url || url;
-      curl = embeddedJson.curl || curl;
-      values = embeddedJson.values || values;
-      numbers = embeddedJson.numbers || numbers;
+  // Helper function to render code examples (handles both string and array)
+  const renderCodeExample = (code, language) => {
+    if (!code) return null;
+    
+    if (Array.isArray(code)) {
+      // If it's an array, join with double newlines for separation
+      const combinedCode = code.join('\n\n');
+      return <CodeBlock language={language} code={cleanText(combinedCode)} />;
+    } else {
+      // If it's a string, use as-is
+      return <CodeBlock language={language} code={cleanText(code)} />;
     }
-  }
+  };
+
+  // Normalize: if data.answer contains a JSON string with our structure, unwrap it
+  const normalizeData = (raw) => {
+    try {
+      if (raw && typeof raw.answer === 'string') {
+        const trimmed = raw.answer.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          const inner = JSON.parse(trimmed);
+          if (inner && typeof inner === 'object') {
+            return {
+              answer: inner.answer ?? '',
+              description: inner.description ?? '',
+              endpoints: Array.isArray(inner.endpoints) ? inner.endpoints : [],
+              code_examples: inner.code_examples ?? null,
+              links: Array.isArray(inner.links) ? inner.links : [],
+            };
+          }
+        }
+      }
+    } catch (e) {
+      // fall through to return raw as-is
+    }
+    return {
+      answer: raw?.answer ?? '',
+      description: raw?.description ?? '',
+      endpoints: Array.isArray(raw?.endpoints) ? raw.endpoints : [],
+      code_examples: raw?.code_examples ?? null,
+      links: Array.isArray(raw?.links) ? raw.links : [],
+    };
+  };
+
+  const normalized = normalizeData(data);
+
+  // Extract data from the normalized response structure
+  const answer = normalized.answer || "";
+  const description = normalized.description || "";
+  const endpoints = normalized.endpoints || [];
+  const code_examples = normalized.code_examples || null;
+  const links = normalized.links || [];
+
+  // Only render sections that have content
+  const hasDescription = description && description.trim();
+  const hasEndpoints = endpoints && endpoints.length > 0;
+  const hasCodeExamples = code_examples && (
+    code_examples.curl || 
+    code_examples.python || 
+    code_examples.javascript
+  );
+  const hasLinks = links && links.length > 0;
 
   return (
     <div className="resp-root">
-      {/* Short Answers */}
-      {short_answers && short_answers.length > 0 && (
+      {/* Answer */}
+      {answer && (
         <div className="resp-section">
-          <h3 className="resp-section-title">Quick Answers</h3>
-          <div className="resp-short-answers">
-            {short_answers.map((answer, i) => (
-              <div key={i} className="resp-short-answer">{cleanText(answer)}</div>
+          <h3 className="resp-section-title">Answer</h3>
+          <div className="resp-answer">
+            {cleanText(answer)}
+          </div>
+        </div>
+      )}
+
+      {/* Description */}
+      {hasDescription && (
+        <div className="resp-section">
+          <h3 className="resp-section-title">Description</h3>
+          <div className="resp-description">
+            {cleanText(description)}
+          </div>
+        </div>
+      )}
+
+      {/* Endpoints */}
+      {hasEndpoints && (
+        <div className="resp-section">
+          <h3 className="resp-section-title">API Endpoints</h3>
+          <div className="resp-endpoints">
+            {endpoints.map((endpoint, i) => (
+              <div key={i} className="resp-endpoint">
+                <div className="resp-endpoint-header">
+                  <span className="resp-endpoint-method">{endpoint.method}</span>
+                  <span className="resp-endpoint-url">{endpoint.url}</span>
+                </div>
+                
+                {endpoint.params && Object.keys(endpoint.params).length > 0 && (
+                  <div className="resp-endpoint-params">
+                    <h4>Parameters:</h4>
+                    <div className="resp-params">
+                      {Object.entries(endpoint.params).map(([key, value]) => (
+                        <div key={key} className="resp-param-item">
+                          <span className="resp-param-key">{key}:</span>
+                          <span className="resp-param-value">{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {endpoint.response_example && (
+                  <div className="resp-endpoint-response">
+                    <h4>Response Example:</h4>
+                    <CodeBlock 
+                      language="json" 
+                      code={JSON.stringify(endpoint.response_example, null, 2)} 
+                    />
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Descriptions */}
-      {descriptions && descriptions.length > 0 && (
+      {/* Code Examples */}
+      {hasCodeExamples && (
         <div className="resp-section">
-          <h3 className="resp-section-title">Detailed Information</h3>
-          <div className="resp-descriptions">
-            {descriptions.map((desc, i) => (
-              <div key={i} className="resp-description">{cleanText(desc)}</div>
-            ))}
+          <h3 className="resp-section-title">Code Examples</h3>
+          <div className="resp-code-examples">
+            {code_examples.curl && (
+              <div className="resp-code-example">
+                <h4>cURL</h4>
+                {renderCodeExample(code_examples.curl, "bash")}
+              </div>
+            )}
+            {code_examples.python && (
+              <div className="resp-code-example">
+                <h4>Python</h4>
+                {renderCodeExample(code_examples.python, "python")}
+              </div>
+            )}
+            {code_examples.javascript && (
+              <div className="resp-code-example">
+                <h4>JavaScript</h4>
+                {renderCodeExample(code_examples.javascript, "javascript")}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* URLs */}
-      {url && url.length > 0 && (
+      {/* Links */}
+      {hasLinks && (
         <div className="resp-section">
-          <h3 className="resp-section-title">Related URLs</h3>
-          <div className="resp-urls">
-            {url.map((link, i) => (
-              <a key={i} href={link} target="_blank" rel="noopener noreferrer" className="resp-url">
+          <h3 className="resp-section-title">Related Links</h3>
+          <div className="resp-links">
+            {links.map((link, i) => (
+              <a key={i} href={link} target="_blank" rel="noopener noreferrer" className="resp-link">
                 {link}
               </a>
             ))}
           </div>
         </div>
       )}
-
-      {/* cURL Commands */}
-      {curl && curl.length > 0 && (
-        <div className="resp-section">
-          <h3 className="resp-section-title">cURL Commands</h3>
-          <div className="resp-curl-commands">
-            {curl.map((command, i) => (
-              <CodeBlock key={i} language="bash" code={cleanText(command)} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Values */}
-      {values && Object.keys(values).length > 0 && (
-        <div className="resp-section">
-          <h3 className="resp-section-title">Key Values</h3>
-          <div className="resp-values">
-            {Object.entries(values).map(([key, value]) => (
-              <div key={key} className="resp-value-item">
-                <span className="resp-value-key">{key}:</span>
-                <span className="resp-value-value">{value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Numbers */}
-      {numbers && Object.keys(numbers).length > 0 && (
-        <div className="resp-section">
-          <h3 className="resp-section-title">Statistics</h3>
-          <div className="resp-numbers">
-            {Object.entries(numbers).map(([key, value]) => (
-              <div key={key} className="resp-number-item">
-                <span className="resp-number-key">{key}:</span>
-                <span className="resp-number-value">{value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-
     </div>
   );
 }
@@ -169,7 +215,6 @@ function Chat() {
   const [loading, setLoading] = useState(false);
   const [streamMsg, setStreamMsg] = useState(null);
 
-  const [useStreaming, setUseStreaming] = useState(false);
 
 
   const handleStream = (question) => {
@@ -178,13 +223,8 @@ function Chat() {
     const userMessage = { role: "user", content: question };
     setHistory((h) => [...h, userMessage]);
 
-    if (useStreaming) {
-      // Use streaming endpoint
-      handleStreamingQuestion(question);
-    } else {
-      // Use regular endpoint
-      handleRegularQuestion(question);
-    }
+    // Use regular endpoint
+    handleRegularQuestion(question);
   };
 
   const handleStreamingQuestion = (question) => {
@@ -216,12 +256,11 @@ function Chat() {
               {
                 role: "bot",
                 data: { 
-                  short_answers: [],
-                  descriptions: [streamedResponse],
-                  url: [],
-                  curl: [],
-                  values: {},
-                  numbers: {}
+                  answer: streamedResponse,
+                  description: "",
+                  endpoints: [],
+                  code_examples: null,
+                  links: []
                 },
                 content: streamedResponse,
                 sources: [],
@@ -250,12 +289,11 @@ function Chat() {
                     {
                       role: "bot",
                       data: { 
-                        short_answers: [],
-                        descriptions: [streamedResponse],
-                        url: [],
-                        curl: [],
-                        values: {},
-                        numbers: {}
+                        answer: streamedResponse,
+                        description: "",
+                        endpoints: [],
+                        code_examples: null,
+                        links: []
                       },
                       content: streamedResponse,
                       sources: [],
@@ -293,12 +331,11 @@ function Chat() {
         { 
           role: "bot", 
           data: {
-            short_answers: [],
-            descriptions: ["Error in streaming response."],
-            url: [],
-            curl: [],
-            values: { error: "streaming_error" },
-            numbers: {}
+            answer: "Error in streaming response.",
+            description: "An error occurred while processing the streaming response.",
+            endpoints: [],
+            code_examples: null,
+            links: []
           },
           content: "Error in streaming response." 
         },
@@ -323,7 +360,7 @@ function Chat() {
           {
             role: "bot",
             data,
-            content: data.descriptions?.[0] || data.short_answers?.[0] || "Response received",
+            content: data.answer || data.description || "Response received",
             sources: data.sources || [],
           },
         ]);
@@ -336,12 +373,11 @@ function Chat() {
           { 
             role: "bot", 
             data: {
-              short_answers: [],
-              descriptions: ["Error contacting backend."],
-              url: [],
-              curl: [],
-              values: { error: "backend_error" },
-              numbers: {}
+              answer: "Error contacting backend.",
+              description: "Unable to connect to the backend service.",
+              endpoints: [],
+              code_examples: null,
+              links: []
             },
             content: "Error contacting backend." 
           },
@@ -362,17 +398,6 @@ function Chat() {
     <div className="chat-root">
       <h2 className="chat-title">RAG Chat</h2>
       
-      {/* Streaming Toggle */}
-      <div className="chat-controls">
-        <label className="streaming-toggle">
-          <input
-            type="checkbox"
-            checked={useStreaming}
-            onChange={(e) => setUseStreaming(e.target.checked)}
-          />
-          <span>Use Streaming</span>
-        </label>
-      </div>
       
       <div className="chat-window">
         {history.map((msg, i) => (
