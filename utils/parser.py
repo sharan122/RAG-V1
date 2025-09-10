@@ -163,46 +163,7 @@ def parse_explicit_endpoint(question: str) -> Optional[Dict[str, str]]:
     
     return None
 
-def _extract_method_and_terms(question: str) -> Dict[str, List[str]]:
-    """Extract HTTP methods and keyword terms from question."""
-    methods = []
-    terms = []
-    
-    # Extract HTTP methods
-    method_pattern = r"(?im)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b"
-    for match in re.finditer(method_pattern, question):
-        methods.append(match.group(1).upper())
-    
-    # Extract potential API-related terms (endpoint names, resource types)
-    # Look for words that might be endpoint names or resource types
-    term_pattern = r"(?im)\b(users?|files?|templates?|documents?|auth|login|logout|upload|download|search|query|filter|sort|page|limit|offset)\b"
-    for match in re.finditer(term_pattern, question):
-        term = match.group(1).lower()
-        if term not in terms:
-            terms.append(term)
-    
-    return {"methods": methods, "terms": terms}
 
-def _filter_endpoints_for_query(endpoints: List[Dict[str, Any]], question: str) -> List[Dict[str, Any]]:
-    """Filter endpoints based on question keywords."""
-    if not endpoints:
-        return []
-    
-    q = question.lower()
-    results = []
-    
-    for e in endpoints:
-        # Check if endpoint path contains any keywords from the question
-        endpoint_path = e.get("endpoint", "").lower()
-        method = e.get("http_method", "").lower()
-        summary = e.get("summary", "").lower()
-        
-        # Simple keyword matching
-        if any(keyword in endpoint_path or keyword in method or keyword in summary 
-               for keyword in ["user", "file", "template", "document", "auth", "upload", "download"]):
-            results.append(e)
-    
-    return results or endpoints
 
 def build_catalog_text(title: str, endpoints: List[Dict[str, Any]]) -> str:
     """Create a synthetic API catalog markdown-like text for fast listing."""

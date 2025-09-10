@@ -43,14 +43,3 @@ def is_ready() -> bool:
     """Check if the RAG system is ready."""
     return rag_chain is not None and retriever is not None
 
-def get_endpoints() -> List[Dict[str, Any]]:
-    """Get extracted endpoints."""
-    return extracted_endpoints
-
-def get_base_url() -> Optional[str]:
-    """Get detected base URL."""
-    return detected_base_url
-
-def get_curl_count() -> int:
-    """Get cURL examples count."""
-    return curl_examples_total_count

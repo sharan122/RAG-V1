@@ -15,12 +15,20 @@ app = FastAPI(
 async def startup_event():
     """Reload existing Weaviate data on application startup."""
     try:
-        from core.state import weaviate_client_instance, weaviate_index_name, vector_store, retriever, rag_chain
         from routers.docs import reload_existing_data
         
         print("🔄 Starting up - attempting to reload existing Weaviate data...")
-        await reload_existing_data()
-        print("✅ Startup complete - existing data reloaded successfully")
+        success = await reload_existing_data()
+        
+        if success:
+            # Import state after reload to get updated values
+            import core.state as state
+            print(f"✅ Startup complete - existing data reloaded successfully")
+            print(f"📊 Loaded {state.documents_count} documents from Weaviate")
+            print(f"🔗 RAG system ready: {state.rag_chain is not None}")
+        else:
+            print("ℹ️ No existing data found - ready for new documentation upload")
+            
     except Exception as e:
         print(f"⚠️ Startup warning - could not reload existing data: {e}")
         print("ℹ️ This is normal for first-time startup")

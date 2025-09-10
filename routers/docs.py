@@ -772,6 +772,7 @@ async def reload_documentation():
         success = await reload_existing_data()
         
         if success:
+            import core.state as state
             return {
                 "status": "success",
                 "message": "Documentation reloaded successfully",
@@ -852,8 +853,12 @@ async def reload_existing_data():
             for class_name in existing_classes:
                 try:
                     # Check how many objects exist in this class
+                    # First try with page_content field
                     objects_response = client.query.get(class_name, ["page_content"]).with_limit(1).do()
                     objects = objects_response.get("data", {}).get("Get", {}).get(class_name, [])
+                    
+                    print(f"DEBUG: Query response for class '{class_name}': {objects_response}")
+                    print(f"DEBUG: Objects found: {len(objects) if objects else 0}")
                     
                     if objects:
                         print(f"DEBUG: Found class '{class_name}' with data, checking total count...")
@@ -878,7 +883,7 @@ async def reload_existing_data():
                             primary_vector_store = WeaviateStore(
                                 client=client,
                                 index_name=class_name,
-                                text_key="page_content",
+                                text_key="page_content",  # This should match the field in your data
                                 embedding=embeddings
                             )
                             
@@ -978,33 +983,34 @@ Respond with ONLY the JSON object, no additional text."""
                         print(f"DEBUG: Smart cURL generation detected in reloaded chain")
                         try:
                             # Get documents directly from Weaviate for cURL generation
-                            result = client.query.get(primary_class, ["page_content", "text", "endpoint", "http_method", "title"]).with_limit(20).do()
+                            result = client.query.get(primary_class, ["page_content", "endpoint", "http_method", "title", "h1", "h2", "section_path"]).with_limit(20).do()
                             
                             if 'errors' in result:
-                                # Fallback to RAG_V1 class
-                                result = client.query.get("RAG_V1", ["text", "h1", "h2", "h3", "h4", "source"]).with_limit(20).do()
-                            
-                            # Convert to Document objects
-                            from langchain_core.documents import Document
-                            documents = []
-                            get_data = result.get("data", {}).get("Get", {})
-                            if get_data:
-                                available_classes = list(get_data.keys())
-                                if available_classes:
-                                    actual_class = available_classes[0]
-                                    docs = get_data.get(actual_class, [])
-                                    for doc in docs:
-                                        props = doc.get("properties", {})
-                                        content = props.get("text", props.get("page_content", ""))
-                                        if content:
-                                            documents.append(Document(
-                                                page_content=content,
-                                                metadata={
-                                                    "title": props.get("h1", props.get("title", "")),
-                                                    "endpoint": props.get("h2", ""),
-                                                    "http_method": props.get("h3", "")
-                                                }
-                                            ))
+                                print(f"DEBUG: Weaviate query had errors for cURL generation: {result.get('errors')}")
+                                documents = []
+                            else:
+                                # Convert to Document objects
+                                from langchain_core.documents import Document
+                                documents = []
+                                get_data = result.get("data", {}).get("Get", {})
+                                if get_data:
+                                    available_classes = list(get_data.keys())
+                                    if available_classes:
+                                        actual_class = available_classes[0]
+                                        docs = get_data.get(actual_class, [])
+                                        for doc in docs:
+                                            # The fields are directly in the document, not in properties
+                                            content = doc.get("page_content", "")
+                                            if content:
+                                                documents.append(Document(
+                                                    page_content=content,
+                                                    metadata={
+                                                        "title": doc.get("h1", doc.get("title", "")),
+                                                        "endpoint": doc.get("endpoint", ""),
+                                                        "http_method": doc.get("http_method", ""),
+                                                        "section_path": doc.get("section_path", "")
+                                                    }
+                                                ))
                             
                             # Generate perfect cURL using the smart function
                             curl_response = generate_perfect_curl(question, documents, None)
@@ -1025,59 +1031,60 @@ Respond with ONLY the JSON object, no additional text."""
                         # Get documents directly from Weaviate without using the retriever
                         print(f"DEBUG: Querying Weaviate class: {primary_class}")
                         
-                        # Try to get documents from the RAG_V1 class which has the actual data
+                        # Try to get documents from the primary class
                         try:
-                            # First try the primary class
-                            result = client.query.get(primary_class, ["page_content", "text", "endpoint", "http_method", "title"]).with_limit(50).do()
+                            # Query the primary class with the correct field names
+                            result = client.query.get(primary_class, ["page_content", "endpoint", "http_method", "title", "h1", "h2", "section_path"]).with_limit(50).do()
                             print(f"DEBUG: Weaviate query result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
                             
                             if 'errors' in result:
-                                print(f"DEBUG: Weaviate query had errors, trying RAG_V1 class instead")
-                                # Fallback to RAG_V1 class which we know has data
-                                result = client.query.get("RAG_V1", ["text", "h1", "h2", "h3", "h4", "source"]).with_limit(50).do()
-                                print(f"DEBUG: Weaviate query result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
-                            
-                            # Get the first available class name from the Get results
-                            get_data = result.get("data", {}).get("Get", {})
-                            if get_data:
-                                # Convert keys to list and get the first one
-                                available_classes = list(get_data.keys())
-                                if available_classes:
-                                    actual_class = available_classes[0]
-                                    docs = get_data.get(actual_class, [])
-                                    print(f"DEBUG: Using class '{actual_class}' for document retrieval")
+                                print(f"DEBUG: Weaviate query had errors: {result.get('errors')}")
+                                context = "Unable to retrieve documentation due to query error."
+                            else:
+                                # Get the first available class name from the Get results
+                                get_data = result.get("data", {}).get("Get", {})
+                                if get_data:
+                                    # Convert keys to list and get the first one
+                                    available_classes = list(get_data.keys())
+                                    if available_classes:
+                                        actual_class = available_classes[0]
+                                        docs = get_data.get(actual_class, [])
+                                        print(f"DEBUG: Using class '{actual_class}' for document retrieval")
+                                    else:
+                                        docs = []
+                                        print(f"DEBUG: No classes found in Get data")
                                 else:
                                     docs = []
-                                    print(f"DEBUG: No classes found in Get data")
-                            else:
-                                docs = []
-                                print(f"DEBUG: No Get data found in result")
-                            print(f"DEBUG: Raw docs from Weaviate: {len(docs) if docs else 0}")
-                            
-                            if docs:
-                                # Convert to Document objects for context
-                                from langchain_core.documents import Document
-                                documents = []
-                                for doc in docs:
-                                    props = doc.get("properties", {})
-                                    # Use 'text' field if available, otherwise 'page_content'
-                                    content = props.get("text", props.get("page_content", ""))
-                                    if content:
-                                        documents.append(Document(
-                                            page_content=content,
-                                            metadata={
-                                                "title": props.get("h1", props.get("title", "")),
-                                                "endpoint": props.get("h2", ""),
-                                                "http_method": props.get("h3", "")
-                                            }
-                                        ))
+                                    print(f"DEBUG: No Get data found in result")
+                                print(f"DEBUG: Raw docs from Weaviate: {len(docs) if docs else 0}")
                                 
-                                context = "\n\n".join([doc.page_content for doc in documents])
-                                print(f"DEBUG: Successfully retrieved {len(documents)} documents for context")
-                                print(f"DEBUG: Context length: {len(context)} characters")
-                            else:
-                                context = "No relevant documentation found."
-                                print(f"DEBUG: No documents found in Weaviate")
+                                if docs:
+                                    # Convert to Document objects for context
+                                    from langchain_core.documents import Document
+                                    documents = []
+                                    for doc in docs:
+                                        # The fields are directly in the document, not in properties
+                                        # Use 'page_content' field which is the correct field name
+                                        content = doc.get("page_content", "")
+                                        if content and len(content.strip()) > 0:
+                                            documents.append(Document(
+                                                page_content=content,
+                                                metadata={
+                                                    "title": doc.get("h1", doc.get("title", "")),
+                                                    "endpoint": doc.get("endpoint", ""),
+                                                    "http_method": doc.get("http_method", ""),
+                                                    "section_path": doc.get("section_path", "")
+                                                }
+                                            ))
+                                        else:
+                                            print(f"DEBUG: Skipping document with empty content: {doc}")
+                                    
+                                    context = "\n\n".join([doc.page_content for doc in documents])
+                                    print(f"DEBUG: Successfully retrieved {len(documents)} documents for context")
+                                    print(f"DEBUG: Context length: {len(context)} characters")
+                                else:
+                                    context = "No relevant documentation found."
+                                    print(f"DEBUG: No documents found in Weaviate")
                                 
                         except Exception as query_error:
                             print(f"DEBUG: Error in Weaviate query: {query_error}")
@@ -1088,7 +1095,7 @@ Respond with ONLY the JSON object, no additional text."""
                         context = "Unable to retrieve documentation."
                     
                     return {
-                        "context": context,
+                        "context": documents,  # Pass documents list instead of string
                         "input": question
                     }
                 
@@ -1121,6 +1128,19 @@ Respond with ONLY the JSON object, no additional text."""
                     # Fallback to simple chain if complex one fails
                     rag_chain = base_rag_chain
                     print("DEBUG: Using fallback simple chain")
+                    
+                    # Test the fallback chain
+                    try:
+                        # Create a simple document for testing
+                        from langchain_core.documents import Document
+                        test_doc = Document(page_content="Template Service documentation", metadata={})
+                        test_result = rag_chain.invoke({
+                            "context": [test_doc],
+                            "input": "What is this documentation about?"
+                        })
+                        print(f"DEBUG: Fallback chain test successful: {str(test_result)[:100]}...")
+                    except Exception as fallback_error:
+                        print(f"DEBUG: Fallback chain test also failed: {fallback_error}")
                 
                 # Update state with combined data
                 state.vector_store = primary_vector_store

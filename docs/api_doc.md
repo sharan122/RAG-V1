@@ -3364,7 +3364,7 @@ curl --location --request POST 'https: //api.example.com/admin/file-storage/file
 ## Endpoint
 
 ```http
-POST admin/file-storage/file/content-type
+  POST admin/file-storage/file/content-type
 ```
 
 Adds a content type mapping for a file extension in the global client settings (DB and cache).

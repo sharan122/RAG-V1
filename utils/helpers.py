@@ -89,27 +89,6 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
             "links": []
         }
 
-def post_process_answer(answer: str) -> str:
-    """Post-process LLM answer for better formatting."""
-    # Add spacing around headers
-    answer = re.sub(r'([^\n])(##)', r'\1\n\n\2', answer)
-    answer = re.sub(r'([^\n])(###)', r'\1\n\n\2', answer)
-    
-    # Add spacing around list items
-    answer = re.sub(r'([^\n])(- )', r'\1\n\n\2', answer)
-    answer = re.sub(r'([^\n])(\d+\.)', r'\1\n\n\2', answer)
-    
-    # Add spacing around code blocks
-    answer = re.sub(r'([^\n])(```)', r'\1\n\n\2', answer)
-    answer = re.sub(r'(```\n)([^\n])', r'\1\2', answer)
-    
-    # Add spacing around blockquotes
-    answer = re.sub(r'([^\n])(>)', r'\1\n\n\2', answer)
-    
-    # Clean up excessive newlines
-    answer = re.sub(r'\n{3,}', r'\n\n', answer)
-    
-    return answer.strip()
 
 def _synthesize_curl(method: str, endpoint: str, example_body: Optional[str] = None, api_version: Optional[str] = None) -> str:
     """Synthesize a basic cURL command from method and endpoint."""
@@ -146,48 +125,8 @@ def _synthesize_curl(method: str, endpoint: str, example_body: Optional[str] = N
     
     return " \\\n".join(curl_parts)
 
-def _filter_curl_snippets_by_terms(snippets: List[Dict[str, Any]], method: Optional[str], endpoint: Optional[str], keyword_terms: Optional[List[str]]) -> List[Dict[str, Any]]:
-    """Filter cURL snippets based on method, endpoint, and keyword terms."""
-    if not snippets:
-        return []
-    
-    filtered = []
-    for snippet in snippets:
-        code = snippet.get("code", "").lower()
-        title = snippet.get("title", "").lower()
-        
-        # Check method
-        if method and method.lower() not in code:
-            continue
-        
-        # Check endpoint
-        if endpoint and endpoint.lower() not in code:
-            continue
-        
-        # Check keyword terms
-        if keyword_terms:
-            if not any(term.lower() in code or term.lower() in title for term in keyword_terms):
-                continue
-        
-        filtered.append(snippet)
-    
-    return filtered
 
-def _llm_filter_curl_snippets(query: str, snippets: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
-    """Use LLM to filter and rank cURL snippets by relevance."""
-    if not snippets or len(snippets) <= top_k:
-        return snippets
-    
-    # Simple heuristic ranking for now
-    # In a full implementation, you'd use an LLM to rank these
-    ranked = sorted(snippets, key=lambda x: len(x.get("code", "")), reverse=True)
-    return ranked[:top_k]
 
-def _llm_recall_endpoints(text: str) -> List[Dict[str, Any]]:
-    """Use LLM to recall additional endpoints that might have been missed by regex."""
-    # This is a placeholder for LLM-based endpoint extraction
-    # In a full implementation, you'd use an LLM to find endpoints
-    return []
 
 def _llm_recall_endpoints_full(text: str, max_chars: int = 160000) -> List[Dict[str, Any]]:
     """Use Claude to propose additional endpoints (method + path). Returns list of dicts.
@@ -254,68 +193,9 @@ def get_curl_from_docs(method: Optional[str], endpoint: Optional[str], allow_syn
         "errors": ["No cURL examples found in the documentation."]
     }
 
-def generate_curls_for_all_endpoints(api_version: Optional[str] = None) -> Dict[str, Any]:
-    """Generate or retrieve cURLs for all extracted endpoints in one response."""
-    # This is a simplified version - in the full implementation, this would generate cURLs for all endpoints
-    return {
-        "title": "cURL commands for all endpoints",
-        "description": "Generated from documentation context. Replace placeholders before use.",
-        "code_blocks": [],
-        "tables": [],
-        "lists": [],
-        "links": [],
-        "notes": ["This feature is not yet fully implemented in the modular version."],
-        "warnings": []
-    }
 
-def generate_curl_with_claude(method: str, endpoint: str, question: str = "", additional_context: str = "") -> Dict[str, Any]:
-    """Generate a properly structured cURL command using Claude."""
-    # This is a simplified version - in the full implementation, this would use Claude
-    curl_cmd = _synthesize_curl(method, endpoint, example_body=None, api_version=None)
-    return {
-        "success": True,
-        "curl": curl_cmd,
-        "method": method,
-        "endpoint": endpoint,
-        "base_url": "<BASE_URL>",
-        "placeholders": {
-            "base_url": "Base URL from your environment",
-            "api_key": "Your API key",
-            "api_token": "Your Bearer token"
-        },
-        "copy_ready": True,
-        "generated_by": "Synthesized"
-    }
 
-def generate_curl_for_all_endpoints() -> Dict[str, Any]:
-    """Generate cURL commands for all available endpoints in the documentation."""
-    # This is a simplified version - in the full implementation, this would generate cURLs for all endpoints
-    return {
-        "success": True,
-        "total_endpoints": 0,
-        "base_url": "<BASE_URL>",
-        "curls": [],
-        "instructions": "This feature is not yet fully implemented in the modular version.",
-        "placeholders": {
-            "base_url": "Your API base URL",
-            "api_key": "Your API key",
-            "api_token": "Your Bearer token"
-        }
-    }
 
-def build_endpoint_candidates_structured(limit: int = 10) -> Dict[str, Any]:
-    """Return a structured table of available endpoints to help user specify target."""
-    # This is a simplified version - in the full implementation, this would return actual endpoints
-    return {
-        "title": "Endpoint candidates",
-        "description": "Specify method and path (e.g., 'POST /folders') to target an endpoint.",
-        "code_blocks": [],
-        "tables": [{"headers": ["Method", "Path", "Summary", "Auth", "Has cURL"], "rows": []}],
-        "lists": [],
-        "links": [],
-        "notes": ["This feature is not yet fully implemented in the modular version."],
-        "warnings": []
-    }
 
 def build_section_path(metadata: Dict[str, Any]) -> str:
     """Build a breadcrumb-like section path from markdown header metadata."""

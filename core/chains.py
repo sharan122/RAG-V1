@@ -95,22 +95,4 @@ Respond with ONLY the JSON object, no additional text."""
     logger.info("Created RAG chain")
     return chain
 
-def get_rag_chain() -> Optional[ConversationalRetrievalChain]:
-    """Get the RAG chain instance."""
-    return rag_chain
 
-def get_retriever() -> Optional[Any]:
-    """Get the retriever instance."""
-    return retriever
-
-def get_global_variables() -> Dict[str, Any]:
-    """Get all global variables for debugging."""
-    return {
-        "raw_document_text_length": len(raw_document_text) if raw_document_text else 0,
-        "extracted_endpoints_count": len(extracted_endpoints) if extracted_endpoints else 0,
-        "detected_base_url": detected_base_url,
-        "base_urls_detected": base_urls_detected,
-        "curl_examples_total_count": curl_examples_total_count,
-        "rag_chain_exists": rag_chain is not None,
-        "retriever_exists": retriever is not None
-    }
