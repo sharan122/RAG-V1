@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTheme } from '../contexts/ThemeContext';
 import { 
   BarChart3, 
   Database, 
@@ -22,6 +23,7 @@ import {
 const API_BASE_URL = 'http://localhost:8000';
 
 function Dashboard() {
+  const { isDark } = useTheme();
   const [systemStatus, setSystemStatus] = useState({
     vectorDB: {
       is_ready: false,
@@ -89,30 +91,30 @@ function Dashboard() {
   };
 
   const StatCard = ({ title, value, icon: Icon, color, subtitle, trend }) => (
-    <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 hover:shadow-xl transition-all duration-300">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 p-6 hover:shadow-xl transition-all duration-300">
       <div className="flex items-center justify-between mb-4">
         <div className={`p-3 rounded-lg ${color}`}>
           <Icon className="w-6 h-6 text-white" />
         </div>
         {trend && (
-          <div className={`flex items-center text-sm ${trend > 0 ? 'text-green-600' : 'text-red-600'}`}>
+          <div className={`flex items-center text-sm ${trend > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
             <TrendingUp className="w-4 h-4 mr-1" />
             {trend > 0 ? '+' : ''}{trend}%
           </div>
         )}
       </div>
       <div>
-        <h3 className="text-2xl font-bold text-gray-900 mb-1">{value}</h3>
-        <p className="text-gray-600 font-medium">{title}</p>
-        {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+        <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">{value}</h3>
+        <p className="text-gray-600 dark:text-gray-300 font-medium">{title}</p>
+        {subtitle && <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{subtitle}</p>}
       </div>
     </div>
   );
 
-  const QuickAction = ({ title, description, icon: Icon, onClick, color = "bg-blue-50 text-blue-600" }) => (
+  const QuickAction = ({ title, description, icon: Icon, onClick, color = "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400" }) => (
     <button
       onClick={onClick}
-      className={`p-4 rounded-xl border border-gray-200 hover:shadow-md transition-all duration-200 text-left ${color}`}
+      className={`p-4 rounded-xl border border-gray-200 dark:border-gray-700 hover:shadow-md transition-all duration-200 text-left ${color}`}
     >
       <div className="flex items-center mb-2">
         <Icon className="w-5 h-5 mr-3" />
@@ -123,14 +125,14 @@ function Dashboard() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 transition-colors duration-200">
       <div className="max-w-7xl mx-auto p-6">
         {/* Header */}
         <div className="mb-8">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">System Dashboard</h1>
-              <p className="text-gray-600">Monitor your RAG system performance and status</p>
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">System Dashboard</h1>
+              <p className="text-gray-600 dark:text-gray-300">Monitor your RAG system performance and status</p>
             </div>
             <div className="flex items-center space-x-3">
               <div className="text-sm text-gray-500">
@@ -186,103 +188,103 @@ function Dashboard() {
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           {/* System Health */}
-          <div className="lg:col-span-2 bg-white rounded-xl shadow-lg border border-gray-100 p-6">
+          <div className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 p-6">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-gray-900">System Health</h2>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white">System Health</h2>
               <div className={`px-3 py-1 rounded-full text-sm font-medium ${
                 systemStatus.vectorDB.is_ready 
-                  ? 'bg-green-100 text-green-800' 
-                  : 'bg-red-100 text-red-800'
+                  ? 'bg-green-100 dark:bg-green-900/20 text-green-800 dark:text-green-300' 
+                  : 'bg-red-100 dark:bg-red-900/20 text-red-800 dark:text-red-300'
               }`}>
                 {systemStatus.vectorDB.is_ready ? 'All Systems Operational' : 'System Issues Detected'}
               </div>
             </div>
             
             <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
                 <div className="flex items-center">
-                  <Database className="w-5 h-5 text-blue-600 mr-3" />
+                  <Database className="w-5 h-5 text-blue-600 dark:text-blue-400 mr-3" />
                   <div>
-                    <h3 className="font-semibold text-gray-900">Vector Database</h3>
-                    <p className="text-sm text-gray-600">Knowledge storage system</p>
+                    <h3 className="font-semibold text-gray-900 dark:text-white">Vector Database</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">Knowledge storage system</p>
                   </div>
                 </div>
                 <div className="flex items-center">
                   {systemStatus.vectorDB.is_ready ? (
-                    <CheckCircle className="w-5 h-5 text-green-600 mr-2" />
+                    <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 mr-2" />
                   ) : (
-                    <AlertCircle className="w-5 h-5 text-red-600 mr-2" />
+                    <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 mr-2" />
                   )}
                   <span className={`font-medium ${
-                    systemStatus.vectorDB.is_ready ? 'text-green-600' : 'text-red-600'
+                    systemStatus.vectorDB.is_ready ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
                   }`}>
                     {systemStatus.vectorDB.is_ready ? 'Ready' : 'Not Ready'}
                   </span>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
                 <div className="flex items-center">
-                  <Brain className="w-5 h-5 text-purple-600 mr-3" />
+                  <Brain className="w-5 h-5 text-purple-600 dark:text-purple-400 mr-3" />
                   <div>
-                    <h3 className="font-semibold text-gray-900">Memory System</h3>
-                    <p className="text-sm text-gray-600">Conversation context management</p>
+                    <h3 className="font-semibold text-gray-900 dark:text-white">Memory System</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">Conversation context management</p>
                   </div>
                 </div>
                 <div className="flex items-center">
-                  <CheckCircle className="w-5 h-5 text-green-600 mr-2" />
-                  <span className="font-medium text-green-600">Active</span>
+                  <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 mr-2" />
+                  <span className="font-medium text-green-600 dark:text-green-400">Active</span>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+              <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
                 <div className="flex items-center">
-                  <Activity className="w-5 h-5 text-emerald-600 mr-3" />
+                  <Activity className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mr-3" />
                   <div>
-                    <h3 className="font-semibold text-gray-900">API Endpoints</h3>
-                    <p className="text-sm text-gray-600">Backend services</p>
+                    <h3 className="font-semibold text-gray-900 dark:text-white">API Endpoints</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">Backend services</p>
                   </div>
                 </div>
                 <div className="flex items-center">
-                  <CheckCircle className="w-5 h-5 text-green-600 mr-2" />
-                  <span className="font-medium text-green-600">Online</span>
+                  <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 mr-2" />
+                  <span className="font-medium text-green-600 dark:text-green-400">Online</span>
                 </div>
               </div>
             </div>
           </div>
 
           {/* Performance Metrics */}
-          <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-6">Performance</h2>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 p-6">
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">Performance</h2>
             
             <div className="space-y-4">
-              <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600 mb-1">
+              <div className="text-center p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                <div className="text-2xl font-bold text-blue-600 dark:text-blue-400 mb-1">
                   {systemStatus.performance.avg_response_time.toFixed(1)}s
                 </div>
-                <div className="text-sm text-blue-600 font-medium">Avg Response Time</div>
+                <div className="text-sm text-blue-600 dark:text-blue-400 font-medium">Avg Response Time</div>
               </div>
               
-              <div className="text-center p-4 bg-green-50 rounded-lg">
-                <div className="text-2xl font-bold text-green-600 mb-1">
+              <div className="text-center p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                <div className="text-2xl font-bold text-green-600 dark:text-green-400 mb-1">
                   {systemStatus.performance.total_queries}
                 </div>
-                <div className="text-sm text-green-600 font-medium">Total Queries</div>
+                <div className="text-sm text-green-600 dark:text-green-400 font-medium">Total Queries</div>
               </div>
               
-              <div className="text-center p-4 bg-purple-50 rounded-lg">
-                <div className="text-2xl font-bold text-purple-600 mb-1">
+              <div className="text-center p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
+                <div className="text-2xl font-bold text-purple-600 dark:text-purple-400 mb-1">
                   {systemStatus.performance.success_rate.toFixed(1)}%
                 </div>
-                <div className="text-sm text-purple-600 font-medium">Success Rate</div>
+                <div className="text-sm text-purple-600 dark:text-purple-400 font-medium">Success Rate</div>
               </div>
             </div>
           </div>
         </div>
 
         {/* Quick Actions */}
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 mb-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-6">Quick Actions</h2>
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 p-6 mb-8">
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">Quick Actions</h2>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
             <QuickAction
@@ -317,51 +319,51 @@ function Dashboard() {
         </div>
 
         {/* Recent Activity */}
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-6">Recent Activity</h2>
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-100 dark:border-gray-700 p-6">
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">Recent Activity</h2>
           
           <div className="space-y-4">
-            <div className="flex items-center p-4 bg-gray-50 rounded-lg">
-              <div className="p-2 bg-blue-100 rounded-lg mr-4">
-                <FileText className="w-5 h-5 text-blue-600" />
+            <div className="flex items-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg mr-4">
+                <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-gray-900">Documentation Processed</h3>
-                <p className="text-sm text-gray-600">
+                <h3 className="font-semibold text-gray-900 dark:text-white">Documentation Processed</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
                   {systemStatus.vectorDB.documents_count} documents loaded into knowledge base
                 </p>
               </div>
-              <div className="text-sm text-gray-500">
+              <div className="text-sm text-gray-500 dark:text-gray-400">
                 {systemStatus.vectorDB.last_updated || 'Just now'}
               </div>
             </div>
 
-            <div className="flex items-center p-4 bg-gray-50 rounded-lg">
-              <div className="p-2 bg-green-100 rounded-lg mr-4">
-                <MessageSquare className="w-5 h-5 text-green-600" />
+            <div className="flex items-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+              <div className="p-2 bg-green-100 dark:bg-green-900/20 rounded-lg mr-4">
+                <MessageSquare className="w-5 h-5 text-green-600 dark:text-green-400" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-gray-900">Chat Sessions Active</h3>
-                <p className="text-sm text-gray-600">
+                <h3 className="font-semibold text-gray-900 dark:text-white">Chat Sessions Active</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
                   {systemStatus.memory.active_sessions} active conversation sessions
                 </p>
               </div>
-              <div className="text-sm text-gray-500">
+              <div className="text-sm text-gray-500 dark:text-gray-400">
                 Live
               </div>
             </div>
 
-            <div className="flex items-center p-4 bg-gray-50 rounded-lg">
-              <div className="p-2 bg-purple-100 rounded-lg mr-4">
-                <Activity className="w-5 h-5 text-purple-600" />
+            <div className="flex items-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+              <div className="p-2 bg-purple-100 dark:bg-purple-900/20 rounded-lg mr-4">
+                <Activity className="w-5 h-5 text-purple-600 dark:text-purple-400" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-gray-900">System Performance</h3>
-                <p className="text-sm text-gray-600">
+                <h3 className="font-semibold text-gray-900 dark:text-white">System Performance</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
                   {systemStatus.performance.success_rate.toFixed(1)}% success rate with {systemStatus.performance.total_queries} total queries
                 </p>
               </div>
-              <div className="text-sm text-gray-500">
+              <div className="text-sm text-gray-500 dark:text-gray-400">
                 {systemStatus.performance.avg_response_time.toFixed(1)}s avg
               </div>
             </div>

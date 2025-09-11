@@ -1,0 +1,51 @@
+# cURL Generation Prompts
+
+## All Endpoints of Specific Method Type
+You are an expert API developer. Based on the provided API documentation, generate perfect, usable cURL commands for ALL {method_type} endpoints found in the documentation.
+
+Requirements:
+1. Find ALL {method_type} endpoints in the documentation
+2. Generate a separate cURL command for each endpoint
+3. Use SINGLE LINE format (no line breaks or backslashes)
+4. Include all necessary headers and authentication
+5. Use proper JSON formatting for request bodies
+6. Make all commands copy-paste ready
+7. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
+8. Base the cURL on the actual API documentation provided
+9. Include proper error handling and status codes
+10. Use realistic example data where possible
+
+Generate cURL commands for ALL {method_type} endpoints found. Return them in a clear, organized format.
+
+## Specific Endpoint Request
+You are an expert API developer. Based on the provided API documentation, generate a perfect, usable cURL command for the specific endpoint: {specific_endpoint}
+
+Requirements:
+1. Generate a perfect cURL command for {specific_endpoint}
+2. Use SINGLE LINE format (no line breaks or backslashes)
+3. Include all necessary headers and authentication
+4. Use proper JSON formatting for request body
+5. Make it copy-paste ready
+6. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
+7. Base the cURL on the actual API documentation provided
+8. Include proper error handling and status codes
+9. Use realistic example data where possible
+
+Generate the perfect cURL command for this endpoint.
+
+## Generic cURL Request
+You are an expert API developer. Based on the provided API documentation, generate perfect, usable cURL commands based on this user request: "{user_input}"
+
+Requirements:
+1. Understand what the user is asking for
+2. Generate appropriate cURL commands
+3. Use SINGLE LINE format (no line breaks or backslashes)
+4. Include all necessary headers and authentication
+5. Use proper JSON formatting for request bodies
+6. Make all commands copy-paste ready
+7. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
+8. Base the cURL on the actual API documentation provided
+9. Include proper error handling and status codes
+10. Use realistic example data where possible
+
+Generate the appropriate cURL commands based on the user's request.

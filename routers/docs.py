@@ -109,74 +109,46 @@ def generate_perfect_curl(user_input: str, context_docs: List[Document], detecte
                 # Combine relevant documentation for Claude
                 combined_context = "\n\n".join([doc.page_content[:800] for doc in relevant_docs[:5]])
                 
-                # INTELLIGENT PROMPT GENERATION - Create the perfect prompt for Claude
+                # INTELLIGENT PROMPT GENERATION - Load prompts from file
+                with open("prompts/curl_generation_prompts.txt", "r", encoding="utf-8") as f:
+                    curl_prompts = f.read()
+
                 if is_all_request and is_method_specific:
                     # User wants all endpoints of a specific type
                     method_type = "POST" if "post" in user_request else "GET" if "get" in user_request else "PUT" if "put" in user_request else "DELETE"
                     
-                    prompt = f"""
-                    You are an expert API developer. Based on the provided API documentation, generate perfect, usable cURL commands for ALL {method_type} endpoints found in the documentation.
+                    # Extract the specific prompt section
+                    all_endpoints_section = curl_prompts.split("## All Endpoints of Specific Method Type")[1].split("## Specific Endpoint Request")[0].strip()
+                    prompt = all_endpoints_section.format(method_type=method_type) + f"""
 
-                    Requirements:
-                    1. Find ALL {method_type} endpoints in the documentation
-                    2. Generate a separate cURL command for each endpoint
-                    3. Use SINGLE LINE format (no line breaks or backslashes)
-                    4. Include all necessary headers and authentication
-                    5. Use proper JSON formatting for request bodies
-                    6. Make all commands copy-paste ready
-                    7. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
-                    8. Base everything on the actual API documentation provided
+API Documentation:
+{combined_context}
 
-                    API Documentation:
-                    {combined_context}
-
-                    Generate cURL commands for ALL {method_type} endpoints found. Return them in a clear, organized format.
-                    """
+Generate cURL commands for ALL {method_type} endpoints found. Return them in a clear, organized format."""
                     
                 elif specific_endpoint:
                     # User wants a specific endpoint
-                    prompt = f"""
-                    You are an expert API developer. Based on the provided API documentation, generate a perfect, usable cURL command for the specific endpoint: {specific_endpoint}
+                    specific_section = curl_prompts.split("## Specific Endpoint Request")[1].split("## Generic cURL Request")[0].strip()
+                    prompt = specific_section.format(specific_endpoint=specific_endpoint) + f"""
 
-                    Requirements:
-                    1. Generate a perfect cURL command for {specific_endpoint}
-                    2. Use SINGLE LINE format (no line breaks or backslashes)
-                    3. Include all necessary headers and authentication
-                    4. Use proper JSON formatting for request body
-                    5. Make it copy-paste ready
-                    6. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
-                    7. Base the cURL on the actual API documentation provided
+API Documentation:
+{combined_context}
 
-                    API Documentation:
-                    {combined_context}
+Endpoint: {specific_endpoint}
 
-                    Endpoint: {specific_endpoint}
-
-                    Generate the perfect cURL command for this endpoint.
-                    """
+Generate the perfect cURL command for this endpoint."""
                     
                 else:
                     # Generic cURL request - be smart about it
-                    prompt = f"""
-                    You are an expert API developer. Based on the provided API documentation, generate perfect, usable cURL commands based on this user request: "{user_input}"
+                    generic_section = curl_prompts.split("## Generic cURL Request")[1].strip()
+                    prompt = generic_section.format(user_input=user_input) + f"""
 
-                    Requirements:
-                    1. Understand what the user is asking for
-                    2. Generate appropriate cURL commands
-                    3. Use SINGLE LINE format (no line breaks or backslashes)
-                    4. Include all necessary headers and authentication
-                    5. Use proper JSON formatting for request bodies
-                    6. Make all commands copy-paste ready
-                    7. Use placeholders like <API_KEY>, <BASE_URL> for sensitive data
-                    8. Base everything on the actual API documentation provided
+API Documentation:
+{combined_context}
 
-                    API Documentation:
-                    {combined_context}
+User Request: {user_input}
 
-                    User Request: {user_input}
-
-                    Generate the appropriate cURL commands based on what the user is asking for.
-                    """
+Generate the appropriate cURL commands based on what the user is asking for."""
                 
                 # GENERATE PERFECT cURL USING CLAUDE
                 print(f"DEBUG: Sending intelligent prompt to Claude")
@@ -266,32 +238,6 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
 
 # Add missing helper functions
-def build_task_preface(intent: str, method: Optional[str], path: Optional[str]) -> str:
-    if intent == "comprehensive_list":
-        return (
-            "Task: COMPREHENSIVE LIST - Retrieve and list ALL API endpoints from the entire documentation. "
-            "This requires full document coverage, not just search results. Return JSON with type='table' and "
-            "tables=[{headers,rows}]. Use columns: Method, Path, Summary, Auth, Has cURL. "
-            "Include ALL endpoints found in the documentation. Include citations in notes.\n"
-        )
-    if intent == "list_apis":
-        return (
-            "Task: List all API endpoints as a table. Return JSON with type='table' and tables=[{headers,rows}]. "
-            "Use columns: Method, Path, Summary, Auth, Has cURL. Include citations in notes.\n"
-        )
-    if intent == "get_payload":
-        target = f" for {method} {path}" if method and path else ""
-        return (
-            f"Task: Return request/response payload details{target}. Strict JSON: type='values', "
-            "values={request:{schema,example}, responses:[{status,schema,example}]}. Include citations in notes.\n"
-        )
-    if intent == "generate_curl":
-        target = f" for {method} {path}" if method and path else ""
-        return (
-            f"Task: Generate cURL commands{target}. Strict JSON: type='code', code_blocks=[{{language:'bash',title,code}}]. "
-            "Use placeholders like <API_TOKEN>, <BASE_URL> if needed; include minimal required headers. Include citations in notes.\n"
-        )
-    return ""
 
 def parse_explicit_endpoint(question: str) -> Optional[Dict[str, str]]:
     """Parse patterns like 'GET /users/{id}' from the question."""
@@ -588,25 +534,8 @@ async def process_documentation(request: DocumentationRequest):
         llm = ChatAnthropic(model=ANTHROPIC_MODEL, temperature=0.2, max_tokens=600)
         
         # Read prompt from file
-        try:
-            with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
-                question_prompt = f.read()
-        except FileNotFoundError:
-            question_prompt = """You are an expert API documentation assistant. Answer based on the provided context.
-
-Respond with JSON format:
-{{
-  "short_answers": ["brief answer"],
-  "descriptions": ["detailed description"],
-  "url": ["https://example.com/api"],
-  "curl": ["curl -X GET 'https://api.example.com/endpoint'"],
-  "values": {{"key": "value"}},
-  "numbers": {{"count": 5}}
-}}
-
-Context: {context}
-Question: {input}
-Respond with ONLY the JSON object."""
+        with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
+            question_prompt = f.read()
 
         prompt = ChatPromptTemplate.from_template(question_prompt)
         doc_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
@@ -932,37 +861,8 @@ async def reload_existing_data():
                 )
                 
                 # Read the structured prompt from file for reloaded data
-                try:
-                    with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
-                        reloaded_prompt = f.read()
-                except FileNotFoundError:
-                    # Fallback prompt if file not found
-                    reloaded_prompt = """You are an expert API documentation assistant. Answer the user's question based on the provided context.
-
-IMPORTANT: You MUST respond with a JSON object in EXACTLY this format:
-
-{{
-  "short_answers": ["brief answer 1", "brief answer 2"],
-  "descriptions": ["detailed description 1", "detailed description 2"],
-  "url": ["https://example.com/api1", "https://example.com/api2"],
-  "curl": ["curl -X GET 'https://api.example.com/endpoint'", "curl -X POST 'https://api.example.com/endpoint'"],
-  "values": {{"key1": "value1", "key2": "value2"}},
-  "numbers": {{"count": 5, "total": 100}}
-}}
-
-RULES:
-1. Use ONLY these exact keys: short_answers, descriptions, url, curl, values, numbers
-2. Each key should contain an array or object as shown above
-3. If a key has no relevant data, use an empty array [] or empty object {{}}
-4. NEVER nest JSON objects - keep it flat
-5. NEVER add additional keys
-6. ALWAYS return valid JSON that can be parsed
-
-Context: {context}
-
-Question: {input}
-
-Respond with ONLY the JSON object, no additional text."""
+                with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
+                    reloaded_prompt = f.read()
 
                 # Create the prompt template - no need to escape braces for create_stuff_documents_chain
                 

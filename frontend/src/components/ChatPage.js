@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import "./Chat.css";
+import { useTheme } from '../contexts/ThemeContext';
 import { 
   Send, 
   Bot, 
@@ -227,6 +228,7 @@ function ResponseRenderer({ data }) {
 }
 
 function Chat() {
+  const { isDark } = useTheme();
   const [input, setInput] = useState("");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -482,32 +484,32 @@ function Chat() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 transition-colors duration-200">
       <div className="max-w-6xl mx-auto p-6">
         {/* Header */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-6 mb-6">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 p-6 mb-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between">
             <div className="flex items-center mb-4 sm:mb-0">
               <div className="p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl mr-4">
                 <MessageSquare className="w-8 h-8 text-white" />
               </div>
               <div>
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900">AI Documentation Assistant</h1>
-                <p className="text-sm sm:text-base text-gray-600">Ask questions about your API documentation</p>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">AI Documentation Assistant</h1>
+                <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">Ask questions about your API documentation</p>
               </div>
             </div>
             <div className="flex items-center space-x-3">
               {/* System Status */}
-              <div className="flex items-center space-x-2 px-3 py-2 bg-gray-50 rounded-lg">
+              <div className="flex items-center space-x-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
                 <div className={`w-2 h-2 rounded-full ${systemStatus.is_ready ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                <span className="text-sm text-gray-600">
+                <span className="text-sm text-gray-600 dark:text-gray-300">
                   {systemStatus.is_ready ? 'Ready' : 'Not Ready'}
                 </span>
               </div>
               {/* Settings Button */}
               <button
                 onClick={() => setShowSettings(!showSettings)}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                className="p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
               >
                 <Settings className="w-5 h-5" />
               </button>
@@ -516,22 +518,22 @@ function Chat() {
 
           {/* Settings Panel */}
           {showSettings && (
-            <div className="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-200">
+            <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Chat Mode</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Chat Mode</label>
                   <select
                     value={chatMode}
                     onChange={(e) => setChatMode(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
                   >
                     <option value="normal">Normal</option>
                     <option value="streaming">Streaming</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">System Status</label>
-                  <div className="text-sm text-gray-600">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">System Status</label>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
                     <div>Documents: {systemStatus.documents_count}</div>
                     <div>Memory: {systemStatus.memory_count} messages</div>
                   </div>
@@ -558,27 +560,27 @@ function Chat() {
         </div>
 
         {/* Chat Interface */}
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
           {/* Chat Messages */}
           <div className="h-96 overflow-y-auto p-6 space-y-4">
             {history.length === 0 ? (
               <div className="text-center py-12">
-                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Bot className="w-8 h-8 text-gray-400" />
+                <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Bot className="w-8 h-8 text-gray-400 dark:text-gray-500" />
                 </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Start a conversation</h3>
-                <p className="text-gray-500">Ask me anything about your API documentation</p>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">Start a conversation</h3>
+                <p className="text-gray-500 dark:text-gray-400">Ask me anything about your API documentation</p>
                 <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md mx-auto">
                   <button
                     onClick={() => setInput("What endpoints are available?")}
-                    className="p-3 text-left bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+                    className="p-3 text-left bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors text-gray-900 dark:text-white"
                   >
                     <Search className="w-4 h-4 inline mr-2" />
                     What endpoints are available?
                   </button>
                   <button
                     onClick={() => setInput("How do I authenticate?")}
-                    className="p-3 text-left bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+                    className="p-3 text-left bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors text-gray-900 dark:text-white"
                   >
                     <Zap className="w-4 h-4 inline mr-2" />
                     How do I authenticate?
@@ -595,12 +597,12 @@ function Chat() {
                     className={`max-w-3xl px-4 py-3 rounded-2xl ${
                       msg.role === "user"
                         ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
-                        : "bg-gray-100 text-gray-900"
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
                     }`}
                   >
                     <div className="flex items-start space-x-3">
                       <div className={`p-1 rounded-full ${
-                        msg.role === "user" ? "bg-white/20" : "bg-gray-200"
+                        msg.role === "user" ? "bg-white/20" : "bg-gray-200 dark:bg-gray-600"
                       }`}>
                         {msg.role === "user" ? (
                           <User className="w-4 h-4" />
@@ -615,11 +617,11 @@ function Chat() {
                           <div className="whitespace-pre-wrap">{msg.content}</div>
                         )}
                         {msg.role === "bot" && msg.sources && msg.sources.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-gray-300">
-                            <div className="text-sm font-medium text-gray-600 mb-2">Sources:</div>
+                          <div className="mt-3 pt-3 border-t border-gray-300 dark:border-gray-600">
+                            <div className="text-sm font-medium text-gray-600 dark:text-gray-300 mb-2">Sources:</div>
                             <ul className="text-sm space-y-1">
                               {msg.sources.map((src, j) => (
-                                <li key={j} className="text-gray-500">
+                                <li key={j} className="text-gray-500 dark:text-gray-400">
                                   {src.title} — {src.source}
                                 </li>
                               ))}
@@ -635,9 +637,9 @@ function Chat() {
             
             {streamMsg !== null && (
               <div className="flex justify-start">
-                <div className="max-w-3xl px-4 py-3 rounded-2xl bg-gray-100 text-gray-900">
+                <div className="max-w-3xl px-4 py-3 rounded-2xl bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white">
                   <div className="flex items-start space-x-3">
-                    <div className="p-1 rounded-full bg-gray-200">
+                    <div className="p-1 rounded-full bg-gray-200 dark:bg-gray-600">
                       <Bot className="w-4 h-4" />
                     </div>
                     <div className="flex-1">
@@ -652,7 +654,7 @@ function Chat() {
           </div>
 
           {/* Input Area */}
-          <div className="border-t border-gray-200 p-4">
+          <div className="border-t border-gray-200 dark:border-gray-700 p-4">
             <form onSubmit={handleSend} className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
               <div className="flex-1 relative">
                 <input
@@ -662,14 +664,14 @@ function Chat() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Ask a question about your API documentation..."
-                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
                   disabled={loading || streamMsg !== null}
                 />
                 {input && (
                   <button
                     type="button"
                     onClick={() => copyToClipboard(input)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
                   >
                     <Copy className="w-4 h-4" />
                   </button>

@@ -1,14 +1,8 @@
 from langchain.chains import ConversationalRetrievalChain
 from langchain_anthropic import ChatAnthropic
-from langchain.prompts import ChatPromptTemplate
-from langchain_core.documents import Document
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Weaviate
-from langchain_community.embeddings import CohereEmbeddings
-from typing import List, Dict, Any, Optional, Union
-from pathlib import Path
-from core.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, COHERE_API_KEY, COHERE_RERANK_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, TOP_K_RETRIEVE, TOP_K_RERANK
-from core.vectorstore import get_weaviate_client, WEAVIATE_INDEX_NAME
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from typing import List, Dict, Any, Optional
+from core.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, CHUNK_SIZE, CHUNK_OVERLAP
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,57 +36,5 @@ def create_text_splitter() -> RecursiveCharacterTextSplitter:
         separators=["\n\n", "\n", " ", ""]
     )
 
-def create_rag_chain(retriever: Any) -> ConversationalRetrievalChain:
-    """Create the RAG chain."""
-    llm = create_llm()
-    
-    # Read the structured prompt from file
-    try:
-        with open("prompts/question_prompt.txt", "r", encoding="utf-8") as f:
-            question_prompt = f.read()
-    except FileNotFoundError:
-        # Fallback prompt if file not found
-        question_prompt = """You are an expert API documentation assistant. Answer the user's question based on the provided context.
-
-IMPORTANT: You MUST respond with a JSON object in EXACTLY this format:
-
-{{
-  "short_answers": ["brief answer 1", "brief answer 2"],
-  "descriptions": ["detailed description 1", "detailed description 2"],
-  "url": ["https://example.com/api1", "https://example.com/api2"],
-  "curl": ["curl -X GET 'https://api.example.com/endpoint'", "curl -X POST 'https://api.example.com/endpoint'"],
-  "values": {{"key1": "value1", "key2": "value2"}},
-  "numbers": {{"count": 5, "total": 100}}
-}}
-
-RULES:
-1. Use ONLY these exact keys: short_answers, descriptions, url, curl, values, numbers
-2. Each key should contain an array or object as shown above
-3. If a key has no relevant data, use an empty array [] or empty object {{}}
-4. NEVER nest JSON objects - keep it flat
-5. NEVER add additional keys
-6. ALWAYS return valid JSON that can be parsed
-
-Context: {context}
-
-Question: {question}
-
-Respond with ONLY the JSON object, no additional text."""
-    
-    # Escape curly braces in the prompt to prevent LangChain template errors
-    question_prompt = question_prompt.replace("{", "{{").replace("}", "}}")
-    
-    prompt_template = ChatPromptTemplate.from_template(question_prompt)
-    
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        return_source_documents=True,
-        verbose=True,
-        combine_docs_chain_kwargs={"prompt": prompt_template}
-    )
-    
-    logger.info("Created RAG chain")
-    return chain
 
 

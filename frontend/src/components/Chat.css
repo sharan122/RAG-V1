@@ -82,6 +82,11 @@
 .resp-list { padding-left: 18px; }
 .resp-links a { display: inline-block; margin-right: 8px; color: #0369a1; }
 
+/* Dark mode for basic response elements */
+.dark .resp-title { color: #e5e7eb; }
+.dark .resp-desc { color: #e5e7eb; }
+.dark .resp-links a { color: #60a5fa; }
+
 /* New fixed JSON structure styles */
 .resp-section-title {
   font-weight: 600;
@@ -93,6 +98,129 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-size: 12px;
+}
+
+/* Dark mode styles for response renderer */
+.dark .resp-section-title {
+  color: #d1d5db;
+  border-bottom-color: #4b5563;
+}
+
+.dark .resp-short-answers {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.dark .resp-short-answer {
+  background: #1f2937;
+  border-color: #374151;
+  color: #e5e7eb;
+}
+
+.dark .resp-descriptions {
+  background: transparent;
+  border-color: transparent;
+}
+
+.dark .resp-description {
+  background: transparent;
+  border-color: transparent;
+  color: #e5e7eb;
+}
+
+.dark .resp-urls {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+}
+
+.dark .resp-url {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+
+.dark .resp-url:hover {
+  background: #3b82f6;
+  color: #dbeafe;
+}
+
+.dark .resp-curl-commands {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.dark .resp-values {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.dark .resp-value-item {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.dark .resp-value-key {
+  color: #d1d5db;
+}
+
+.dark .resp-value-value {
+  color: #10b981;
+}
+
+.dark .resp-numbers {
+  background: #451a03;
+  border-color: #92400e;
+}
+
+.dark .resp-number-item {
+  background: #451a03;
+  border-color: #92400e;
+}
+
+.dark .resp-number-key {
+  color: #fbbf24;
+}
+
+.dark .resp-number-value {
+  color: #f59e0b;
+}
+
+.dark .resp-table th {
+  background: #374151;
+  color: #e5e7eb;
+}
+
+.dark .resp-table th, 
+.dark .resp-table td {
+  border-color: #4b5563;
+  color: #e5e7eb;
+}
+
+.dark .resp-code {
+  border-color: #4b5563;
+}
+
+.dark .resp-code-header {
+  background: #374151;
+}
+
+.dark .resp-code-lang {
+  color: #9ca3af;
+}
+
+.dark .resp-error {
+  background: #7f1d1d;
+  border-color: #dc2626;
+  color: #fecaca;
+}
+
+/* Dark mode for answer and description sections */
+.dark .resp-answer {
+  color: #e5e7eb;
+}
+
+.dark .resp-description {
+  color: #e5e7eb;
 }
 
 .resp-short-answers {
