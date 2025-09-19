@@ -70,7 +70,7 @@ A beautiful web application that allows you to upload API documentation and ask 
 1. **Start the FastAPI backend**
    ```bash
    # From the root directory
-   python app.py
+   python app_newpp.py
    ```
    The backend will be available at `http://localhost:8000`
 

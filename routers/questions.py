@@ -178,7 +178,15 @@ async def ask_question(request: QuestionRequest):
         
         print(f"DEBUG: Final structured_content: {structured_content}")
         
-        # Ensure all required fields exist with proper defaults
+        # Define allowed fields - only these will be returned
+        ALLOWED_FIELDS = ["answer", "description", "endpoints", "code_examples", "links"]
+        
+        # Check for additional fields and warn
+        additional_fields = [key for key in structured_content.keys() if key not in ALLOWED_FIELDS]
+        if additional_fields:
+            print(f"WARNING: AI generated additional fields that will be filtered out: {additional_fields}")
+        
+        # Filter to only allowed fields and ensure all required fields exist with proper defaults
         structured_content = {
             "answer": structured_content.get("answer", ""),
             "description": structured_content.get("description", ""),

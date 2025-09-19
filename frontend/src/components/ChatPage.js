@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import "./Chat.css";
 import { useTheme } from '../contexts/ThemeContext';
+import { useSystem } from '../contexts/SystemContext';
 import { 
   Send, 
   Bot, 
@@ -16,7 +17,8 @@ import {
   Trash2,
   MoreVertical,
   ThumbsUp,
-  ThumbsDown
+  ThumbsDown,
+  Check
 } from 'lucide-react';
 
 function TypingDots() {
@@ -30,12 +32,39 @@ function TypingDots() {
 }
 
 function CodeBlock({ language = "bash", code = "" }) {
-  const onCopy = () => navigator.clipboard.writeText(code);
+  const [copied, setCopied] = useState(false);
+  const [lastCopiedCode, setLastCopiedCode] = useState("");
+  
+  // Reset copied state only when code content changes
+  useEffect(() => {
+    if (lastCopiedCode !== code) {
+      setCopied(false);
+      setLastCopiedCode("");
+    }
+  }, [code, lastCopiedCode]);
+  
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setLastCopiedCode(code);
+      // Don't auto-reset, keep the checkmark until code changes
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
+  
   return (
     <div className="resp-code">
       <div className="resp-code-header">
         <span className="resp-code-lang">{language}</span>
-        <button className="resp-copy" onClick={onCopy} title="Copy to clipboard">Copy</button>
+        <button 
+          className="resp-copy-icon" 
+          onClick={onCopy} 
+          title={copied ? "Copied!" : "Copy to clipboard"}
+        >
+          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+        </button>
       </div>
       <pre><code>{code}</code></pre>
     </div>
@@ -158,12 +187,20 @@ function ResponseRenderer({ data }) {
                   <div className="resp-endpoint-params">
                     <h4>Parameters:</h4>
                     <div className="resp-params">
-                      {Object.entries(endpoint.params).map(([key, value]) => (
-                        <div key={key} className="resp-param-item">
-                          <span className="resp-param-key">{key}:</span>
-                          <span className="resp-param-value">{value}</span>
-                        </div>
-                      ))}
+                      {Object.entries(endpoint.params).map(([key, value]) => {
+                        const isObject = value !== null && typeof value === 'object';
+                        const display = isObject ? JSON.stringify(value, null, 2) : String(value);
+                        return (
+                          <div key={key} className="resp-param-item">
+                            <span className="resp-param-key">{key}:</span>
+                            {isObject ? (
+                              <CodeBlock language="json" code={display} />
+                            ) : (
+                              <span className="resp-param-value">{display}</span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -229,17 +266,11 @@ function ResponseRenderer({ data }) {
 
 function Chat() {
   const { isDark } = useTheme();
+  const { systemStatus, showSettings, setShowSettings, chatMode, setChatMode } = useSystem();
   const [input, setInput] = useState("");
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamMsg, setStreamMsg] = useState(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [chatMode, setChatMode] = useState('normal'); // normal, streaming
-  const [systemStatus, setSystemStatus] = useState({
-    is_ready: false,
-    documents_count: 0,
-    memory_count: 0
-  });
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -248,24 +279,46 @@ function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history, streamMsg]);
 
-  // Check system status on mount
+  // Listen for custom events from navbar
   useEffect(() => {
-    checkSystemStatus();
-  }, []);
+    const handleClearChat = () => {
+      setHistory([]);
+      setStreamMsg(null);
+    };
 
-  const checkSystemStatus = async () => {
-    try {
-      const response = await fetch('http://localhost:8000/docs/status');
-      const data = await response.json();
-      setSystemStatus({
-        is_ready: data.vectorstore?.status === "ready",
-        documents_count: data.vectorstore?.document_count || 0,
-        memory_count: data.memory_count || 0
-      });
-    } catch (error) {
-      console.error('Failed to check system status:', error);
+    const handleDownloadChat = () => {
+      const chatData = {
+        timestamp: new Date().toISOString(),
+        messages: history
+      };
+      const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chat-export-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    window.addEventListener('clearChat', handleClearChat);
+    window.addEventListener('downloadChat', handleDownloadChat);
+
+    return () => {
+      window.removeEventListener('clearChat', handleClearChat);
+      window.removeEventListener('downloadChat', handleDownloadChat);
+    };
+  }, [history]);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+      inputRef.current.style.height = inputRef.current.scrollHeight + 'px';
     }
-  };
+  }, [input]);
+
 
 
 
@@ -451,29 +504,8 @@ function Chat() {
     setInput("");
   };
 
-  const clearChat = () => {
-    setHistory([]);
-    setStreamMsg(null);
-  };
-
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
-  };
-
-  const downloadChat = () => {
-    const chatData = {
-      timestamp: new Date().toISOString(),
-      messages: history
-    };
-    const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `chat-export-${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   };
 
   const handleKeyPress = (e) => {
@@ -486,83 +518,10 @@ function Chat() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 transition-colors duration-200">
       <div className="max-w-6xl mx-auto p-6">
-        {/* Header */}
-        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 p-6 mb-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between">
-            <div className="flex items-center mb-4 sm:mb-0">
-              <div className="p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl mr-4">
-                <MessageSquare className="w-8 h-8 text-white" />
-              </div>
-              <div>
-                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">AI Documentation Assistant</h1>
-                <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">Ask questions about your API documentation</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-3">
-              {/* System Status */}
-              <div className="flex items-center space-x-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                <div className={`w-2 h-2 rounded-full ${systemStatus.is_ready ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                <span className="text-sm text-gray-600 dark:text-gray-300">
-                  {systemStatus.is_ready ? 'Ready' : 'Not Ready'}
-                </span>
-              </div>
-              {/* Settings Button */}
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-              >
-                <Settings className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-
-          {/* Settings Panel */}
-          {showSettings && (
-            <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Chat Mode</label>
-                  <select
-                    value={chatMode}
-                    onChange={(e) => setChatMode(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                  >
-                    <option value="normal">Normal</option>
-                    <option value="streaming">Streaming</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">System Status</label>
-                  <div className="text-sm text-gray-600 dark:text-gray-300">
-                    <div>Documents: {systemStatus.documents_count}</div>
-                    <div>Memory: {systemStatus.memory_count} messages</div>
-                  </div>
-                </div>
-                <div className="flex items-end space-x-2">
-                  <button
-                    onClick={clearChat}
-                    className="px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors flex items-center"
-                  >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    Clear Chat
-                  </button>
-                  <button
-                    onClick={downloadChat}
-                    className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors flex items-center"
-                  >
-                    <Download className="w-4 h-4 mr-2" />
-                    Export
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* Chat Interface */}
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
           {/* Chat Messages */}
-          <div className="h-96 overflow-y-auto p-6 space-y-4">
+          <div className="h-[calc(100vh-200px)] overflow-y-auto p-6 space-y-4">
             {history.length === 0 ? (
               <div className="text-center py-12">
                 <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -594,7 +553,7 @@ function Chat() {
                   className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
-                    className={`max-w-3xl px-4 py-3 rounded-2xl ${
+                    className={`message-bubble max-w-3xl px-4 py-3 rounded-2xl ${
                       msg.role === "user"
                         ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
                         : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white"
@@ -637,7 +596,7 @@ function Chat() {
             
             {streamMsg !== null && (
               <div className="flex justify-start">
-                <div className="max-w-3xl px-4 py-3 rounded-2xl bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white">
+                <div className="message-bubble max-w-3xl px-4 py-3 rounded-2xl bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white">
                   <div className="flex items-start space-x-3">
                     <div className="p-1 rounded-full bg-gray-200 dark:bg-gray-600">
                       <Bot className="w-4 h-4" />
@@ -657,21 +616,22 @@ function Chat() {
           <div className="border-t border-gray-200 dark:border-gray-700 p-4">
             <form onSubmit={handleSend} className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
               <div className="flex-1 relative">
-                <input
+                <textarea
                   ref={inputRef}
-                  type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="Ask a question about your API documentation..."
-                  className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                  placeholder="Ask anything ..."
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 dark:border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 resize-none min-h-[48px] max-h-32"
                   disabled={loading || streamMsg !== null}
+                  rows={1}
                 />
                 {input && (
                   <button
                     type="button"
                     onClick={() => copyToClipboard(input)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                    className="absolute right-3 top-3 p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                    title="Copy input"
                   >
                     <Copy className="w-4 h-4" />
                   </button>

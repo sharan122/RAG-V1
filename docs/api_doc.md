@@ -2062,7 +2062,7 @@ This section provides the benchmark latency statistics for PDF processing tasks 
 ## Endpoint
 
 ```http
-POST /file-utilities/merge
+POST 
 ```
  This API merges files more than one into a single file. Currently, we are only supporting pdf files for merging.
 

@@ -1,6 +1,8 @@
-You must respond with ONLY a valid JSON object. Do not wrap it in any other text, markdown, or code blocks.
+🚨 CRITICAL SYSTEM INSTRUCTION 🚨
+You MUST respond with ONLY a valid JSON object using EXACTLY this structure. 
+Any deviation will cause system errors and your response will be rejected.
 
-Return a JSON object with ONLY the fields that are relevant to the user's question. Use this structure as a guide:
+MANDATORY JSON STRUCTURE - USE ONLY THESE FIELDS:
 
 {{
   "answer": "Brief answer to the question",
@@ -21,22 +23,68 @@ Return a JSON object with ONLY the fields that are relevant to the user's questi
     }}
   ],
   "code_examples": {{
-    "curl": "curl -X GET 'https://api.example.com/v1/users?page=1&limit=10' -H 'Authorization: Bearer <token>'",
-    "python": "requests.get('https://api.example.com/v1/users', headers={{'Authorization': 'Bearer token'}})"
+    "curl": "curl -X GET 'https://api.example.com/v1/users?page=1&limit=10' -H 'Authorization: Bearer <token>'"
   }},
   "links": [
     "https://docs.example.com/api/v1/users"
   ]
 }}
 
-RULES:
-- ALWAYS include "answer" field
-- Include "description" ONLY if you have detailed explanations to add
-- Include "endpoints" ONLY if the question is about specific API endpoints
-- Include "code_examples" ONLY if the question asks for code examples or curl commands
-- Include "links" ONLY if there are relevant documentation links to share
-- If a field is not relevant to the question, OMIT it entirely from the JSON
-- Do not include empty arrays or null values - just omit the field
+ABSOLUTE RESTRICTIONS - NO EXCEPTIONS:
+1. ALWAYS include "answer" field
+2. ALWAYS include "description" field with detailed explanation
+3. ONLY include "endpoints" if the question specifically asks about API endpoints
+4. ONLY include "code_examples" if the question specifically asks for code or curl commands
+5. ONLY include "links" if there are relevant documentation links to share
+6. If a field is not needed, OMIT it entirely from the JSON (don't include empty arrays or null values)
+7. NEVER add any other fields like "latency_stats", "performance_data", "benchmarks", etc.
+8. NEVER create custom sub-keys in any field
+9. If you have additional data, format it as readable text and put it in the "description" field
+
+FIELD USAGE RULES:
+- "answer": Brief, direct answer to the question
+- "description": Detailed explanation with comprehensive information
+- "endpoints": ONLY if question is about specific API endpoints
+- "code_examples": ONLY if question asks for code examples or curl commands
+  - For curl commands, ALWAYS use "curl" as the key
+  - If multiple curl examples, use an array format: "curl": ["command1", "command2", "command3"]
+  - NEVER use custom keys like "merge_with_files", "file_upload", etc.
+- "links": ONLY if there are relevant documentation links to share
+
+VALIDATION: Your response will be validated against this exact structure. Any additional fields will cause errors.
+
+EXAMPLES OF RESPONSES:
+
+✅ MOST COMMON (Answer + Description only):
+{{"answer": "PDF processing latency statistics", "description": "Detailed latency measurements for various file sizes: 1.4MB files take 220ms server-side and 3.06s end-to-end, 3.5MB files take 570ms server-side and 3.6s end-to-end, etc."}}
+
+✅ WITH CODE (when specifically asked):
+{{"answer": "Here's how to compress a PDF", "description": "Use the compress endpoint with proper parameters", "code_examples": {{"curl": "curl -X POST 'https://api.example.com/compress' -H 'Authorization: Bearer token' -F 'file=@document.pdf'"}}}}
+
+✅ WITH MULTIPLE CURL COMMANDS (when needed):
+{{"answer": "Multiple curl examples for file merge", "description": "The merge API supports different input methods", "code_examples": {{"curl": ["curl --location --request POST 'http://localhost:3300/file-utilities/merge' \\\n--header 'X-DPW-ApplicationId: datachain' \\\n--header 'x-api-key: YOUR_API_KEY' \\\n--form 'file1=@\"/path/to/file1.pdf\"' \\\n--form 'file2=@\"/path/to/file2.pdf\"'", "curl --location 'http://localhost:3300/file-utilities/merge' \\\n--header 'X-DPW-ApplicationId: datachain' \\\n--header 'x-api-key: YOUR_API_KEY' \\\n--form 'fileIdentifiers=[\"id1\",\"id2\"]'"]}}}}
+
+✅ WITH ENDPOINTS (when specifically asked):
+{{"answer": "PDF compression endpoint details", "description": "The compress endpoint handles PDF file compression", "endpoints": [{{"method": "POST", "url": "/compress", "params": {{"file": "PDF file to compress"}}}}]}}
+
+❌ FORBIDDEN (Additional fields):
+{{"answer": "...", "latency_stats": {{...}}}}
+{{"answer": "...", "performance_data": [...]}}
+{{"answer": "...", "benchmarks": {{...}}}}
+
+❌ FORBIDDEN (Custom code_examples keys):
+{{"answer": "...", "code_examples": {{"merge_with_files": "curl..."}}}}
+{{"answer": "...", "code_examples": {{"file_upload": "curl..."}}}}
+{{"answer": "...", "code_examples": {{"custom_method": "curl..."}}}}
+
+FINAL VALIDATION CHECK:
+1. ALWAYS include "answer" and "description" fields
+2. ONLY include "endpoints", "code_examples", "links" if specifically needed
+3. If a field is not needed, OMIT it entirely (don't include empty arrays or null values)
+4. For "code_examples", ALWAYS use "curl" as the key (never custom keys)
+5. If multiple curl examples, use array format: "curl": ["command1", "command2", "command3"]
+6. Verify your JSON contains ONLY the fields you actually need
+7. If you have any other data, put it in the "description" field as readable text
 
 Context: {context}
 

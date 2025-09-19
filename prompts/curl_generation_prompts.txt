@@ -22,7 +22,7 @@ You are an expert API developer. Based on the provided API documentation, genera
 
 Requirements:
 1. Generate a perfect cURL command for {specific_endpoint}
-2. Use SINGLE LINE format (no line breaks or backslashes)
+2. Use MULTI-LINE format 
 3. Include all necessary headers and authentication
 4. Use proper JSON formatting for request body
 5. Make it copy-paste ready

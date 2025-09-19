@@ -5,8 +5,9 @@ class EndpointInfo(BaseModel):
     """Information about a specific API endpoint."""
     method: str
     url: str
-    params: Optional[Dict[str, str]] = None
-    response_example: Optional[Dict[str, Any]] = None
+    # Allow nested structures (e.g., options: { preSignedUrlMetadata: {...} })
+    params: Optional[Dict[str, Any]] = None
+    response_example: Optional[Union[Dict[str, Any], List[Any]]] = None
 
 class CodeExamples(BaseModel):
     """Code examples for the API."""

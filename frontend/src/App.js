@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
+import { SystemProvider, useSystem } from './contexts/SystemContext';
 import UploadPage from './components/UploadPage';
 import ChatPage from './components/ChatPage';
 import Dashboard from './components/Dashboard';
@@ -14,13 +15,26 @@ import {
   Settings,
   Zap,
   Sun,
-  Moon
+  Moon,
+  Trash2,
+  Download
 } from 'lucide-react';
 
 // Navigation Component
 function Navigation() {
   const location = useLocation();
   const { theme, toggleTheme, isDark } = useTheme();
+  const { systemStatus, showSettings, setShowSettings, chatMode, setChatMode } = useSystem();
+  
+  const clearChat = () => {
+    // This will be handled by the ChatPage component
+    window.dispatchEvent(new CustomEvent('clearChat'));
+  };
+
+  const downloadChat = () => {
+    // This will be handled by the ChatPage component
+    window.dispatchEvent(new CustomEvent('downloadChat'));
+  };
   
   const navItems = [
     { path: '/', label: 'Dashboard', icon: BarChart3 },
@@ -66,6 +80,27 @@ function Navigation() {
               })}
             </nav>
             
+            {/* System Status - Only show on chat page */}
+            {location.pathname === '/chat' && (
+              <div className="flex items-center space-x-2 px-3 py-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <div className={`w-2 h-2 rounded-full ${systemStatus.is_ready ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="text-sm text-gray-600 dark:text-gray-300">
+                  {systemStatus.is_ready ? 'Ready' : 'Not Ready'}
+                </span>
+              </div>
+            )}
+            
+            {/* Settings Button - Only show on chat page */}
+            {location.pathname === '/chat' && (
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="p-2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title="Settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+            )}
+            
             {/* Theme Toggle Button */}
             <button
               onClick={toggleTheme}
@@ -80,6 +115,50 @@ function Navigation() {
             </button>
           </div>
         </div>
+        
+        {/* Settings Panel - Only show on chat page */}
+        {location.pathname === '/chat' && showSettings && (
+          <div className="max-w-7xl mx-auto px-4 pb-4">
+            <div className="bg-gray-50 dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Chat Mode</label>
+                  <select
+                    value={chatMode}
+                    onChange={(e) => setChatMode(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="streaming">Streaming</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">System Status</label>
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                    <div>Documents: {systemStatus.documents_count}</div>
+                    <div>Memory: {systemStatus.memory_count} messages</div>
+                  </div>
+                </div>
+                <div className="flex items-end space-x-2">
+                  <button
+                    onClick={clearChat}
+                    className="px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors flex items-center"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Clear Chat
+                  </button>
+                  <button
+                    onClick={downloadChat}
+                    className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors flex items-center"
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Export
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -88,15 +167,16 @@ function Navigation() {
 function App() {
   return (
     <ThemeProvider>
-      <Router>
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 transition-colors duration-200">
-          <Navigation />
-          
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/upload" element={<UploadPage />} />
-            <Route path="/chat" element={<ChatPage />} />
-          </Routes>
+      <SystemProvider>
+        <Router>
+          <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 transition-colors duration-200">
+            <Navigation />
+            
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/upload" element={<UploadPage />} />
+              <Route path="/chat" element={<ChatPage />} />
+            </Routes>
           
           {/* Toast Notifications */}
           <Toaster
@@ -145,8 +225,9 @@ function App() {
               },
             }}
           />
-        </div>
-      </Router>
+          </div>
+        </Router>
+      </SystemProvider>
     </ThemeProvider>
   );
 }
